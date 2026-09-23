@@ -16,6 +16,9 @@ class Settings:
     session_minutes: int
     trusted_hosts: tuple[str, ...]
     debug: bool
+    smtp_host: str = "localhost"
+    smtp_port: int = 25
+    mail_from: str = "certify@localhost"
 
     @classmethod
     def from_env(cls, *, require_secret: bool = True) -> "Settings":
@@ -34,4 +37,7 @@ class Settings:
                 if item.strip()
             ),
             debug=_boolean("CERTIFY_DEBUG"),
+            smtp_host=os.getenv("CERTIFY_SMTP_HOST", "localhost"),
+            smtp_port=int(os.getenv("CERTIFY_SMTP_PORT", "25")),
+            mail_from=os.getenv("CERTIFY_MAIL_FROM", "certify@localhost"),
         )

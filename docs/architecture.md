@@ -19,6 +19,14 @@ sind weder Redis noch Celery noch Container erforderlich.
 * **Schlüssel:** Ein Auftrag ist entweder `managed` oder `csr`. Im CSR-Modus
   verlässt der private Schlüssel das Zielsystem nicht. Verwaltete Schlüssel
   dürfen nach expliziter Autorisierung heruntergeladen und verteilt werden.
+  Neu erzeugte Schlüssel und System-Zugangsdaten liegen AES-256-GCM-verschlüsselt
+  mit kontextgebundenen Authentifizierungsdaten in SQLite. Der Schlüssel wird
+  mittels HKDF vom ausschließlich extern konfigurierten Master-Secret abgeleitet.
+* **Delegation:** Administratoren weisen Zertifikate explizit Benutzern und
+  Zielsystemen zu. Operatoren sehen und bearbeiten ausschließlich ihre
+  Zuweisungen; dazu gehören CSR-Upload und lokale Schlüsselerzeugung.
+* **Benachrichtigung:** Benutzer wählen `none`, `errors`, `expiry` oder `all`;
+  der lokale SMTP-Relay übernimmt Transport und Richtlinien.
 * **Verteilung:** Adapter kapseln Linux via OpenSSH, IIS via PowerShell-over-SSH
   und FortiOS 7.4 via dessen REST-API. Host-Key-Prüfung ist bei SSH zwingend.
   Remote-Kommandos sollen auf vorher freigegebene Skripte beschränkt werden.

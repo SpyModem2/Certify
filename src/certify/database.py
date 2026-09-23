@@ -11,7 +11,8 @@ PRAGMA foreign_keys = ON;
 CREATE TABLE IF NOT EXISTS users (
  id INTEGER PRIMARY KEY, username TEXT NOT NULL UNIQUE,
  password_hash TEXT NOT NULL, role TEXT NOT NULL CHECK(role IN ('admin','operator','auditor')),
- totp_secret TEXT, active INTEGER NOT NULL DEFAULT 1,
+ totp_secret TEXT, email TEXT, notify_level TEXT NOT NULL DEFAULT 'errors'
+ CHECK(notify_level IN ('none','errors','expiry','all')), active INTEGER NOT NULL DEFAULT 1,
  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE TABLE IF NOT EXISTS certificates (
@@ -25,8 +26,21 @@ CREATE TABLE IF NOT EXISTS certificates (
 CREATE TABLE IF NOT EXISTS targets (
  id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE,
  adapter TEXT NOT NULL CHECK(adapter IN ('linux-ssh','iis-ssh','fortigate-7.4')),
- config TEXT NOT NULL DEFAULT '{}', enabled INTEGER NOT NULL DEFAULT 1,
+ hostname TEXT, ip_address TEXT, config TEXT NOT NULL DEFAULT '{}', secret_config TEXT,
+ enabled INTEGER NOT NULL DEFAULT 1,
  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS certificate_users (
+ certificate_id INTEGER NOT NULL REFERENCES certificates(id) ON DELETE CASCADE,
+ user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+ assigned_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+ PRIMARY KEY(certificate_id,user_id)
+);
+CREATE TABLE IF NOT EXISTS certificate_targets (
+ certificate_id INTEGER NOT NULL REFERENCES certificates(id) ON DELETE CASCADE,
+ target_id INTEGER NOT NULL REFERENCES targets(id) ON DELETE CASCADE,
+ assigned_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+ PRIMARY KEY(certificate_id,target_id)
 );
 CREATE TABLE IF NOT EXISTS audit_log (
  sequence INTEGER PRIMARY KEY AUTOINCREMENT, occurred_at TEXT NOT NULL,
@@ -45,6 +59,20 @@ class Database:
         self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o750)
         with self.connect() as connection:
             connection.executescript(SCHEMA)
+            # Small, idempotent in-place migrations preserve installations
+            # created by earlier releases.
+            user_columns = {row["name"] for row in connection.execute("PRAGMA table_info(users)")}
+            if "email" not in user_columns:
+                connection.execute("ALTER TABLE users ADD COLUMN email TEXT")
+            if "notify_level" not in user_columns:
+                connection.execute("ALTER TABLE users ADD COLUMN notify_level TEXT NOT NULL DEFAULT 'errors'")
+            target_columns = {row["name"] for row in connection.execute("PRAGMA table_info(targets)")}
+            if "hostname" not in target_columns:
+                connection.execute("ALTER TABLE targets ADD COLUMN hostname TEXT")
+            if "ip_address" not in target_columns:
+                connection.execute("ALTER TABLE targets ADD COLUMN ip_address TEXT")
+            if "secret_config" not in target_columns:
+                connection.execute("ALTER TABLE targets ADD COLUMN secret_config TEXT")
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:
