@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>Certify · Zertifikatsverwaltung</title>
+  <link rel="stylesheet" href="/assets/app.css">
+  <script src="/assets/app.js" defer></script>
+</head>
+<body>
+  <div id="toast-region" class="toast-region" aria-live="polite"></div>
+
+  <main id="login-view" class="login-shell">
+    <section class="login-brand" aria-label="Certify">
+      <div class="brand-mark large" aria-hidden="true">C</div>
+      <p class="eyebrow">Certificate operations</p>
+      <h1>Zertifikate.<br><span>Sicher verwaltet.</span></h1>
+      <p class="login-copy">Eine zentrale Oberfläche für Zertifikate, Zielsysteme, Benutzer und revisionssichere Vorgänge.</p>
+      <div class="trust-row"><span>● Verschlüsselt</span><span>● Rollenbasiert</span><span>● Auditierbar</span></div>
+    </section>
+    <section class="login-panel">
+      <form id="login-form" class="login-card">
+        <div class="mobile-brand"><div class="brand-mark">C</div><strong>Certify</strong></div>
+        <p class="eyebrow">Willkommen zurück</p>
+        <h2>Anmelden</h2>
+        <p class="muted">Melden Sie sich mit Ihrem persönlichen Konto an.</p>
+        <label>Benutzername<input name="username" autocomplete="username" required autofocus></label>
+        <label>Passwort<input name="password" type="password" autocomplete="current-password" required></label>
+        <label>TOTP-Code <span class="optional">optional</span><input name="totp_code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" placeholder="000000"></label>
+        <button class="button primary wide" type="submit"><span>Anmelden</span><span aria-hidden="true">→</span></button>
+        <p id="login-error" class="form-error" role="alert"></p>
+      </form>
+    </section>
+  </main>
+
+  <div id="app-view" class="app-shell" hidden>
+    <aside class="sidebar">
+      <a class="brand" href="#dashboard"><span class="brand-mark">C</span><span>Certify</span></a>
+      <nav id="main-nav" aria-label="Hauptnavigation"></nav>
+      <div class="sidebar-bottom">
+        <a href="/docs" target="_blank" rel="noreferrer" class="nav-link"><span class="nav-icon">↗</span><span>API-Dokumentation</span></a>
+        <button id="logout-button" class="nav-link"><span class="nav-icon">⇥</span><span>Abmelden</span></button>
+        <div class="user-card"><span id="user-avatar" class="avatar"></span><span><strong id="user-name"></strong><small id="user-role"></small></span></div>
+      </div>
+    </aside>
+
+    <div class="workspace">
+      <header class="topbar">
+        <button id="menu-button" class="icon-button menu-button" aria-label="Navigation öffnen">☰</button>
+        <div><p class="breadcrumbs">Certify / <span id="breadcrumb">Übersicht</span></p><h1 id="page-title">Übersicht</h1></div>
+        <div class="top-actions"><span id="health-pill" class="health-pill"><i></i> Systemstatus</span><button class="icon-button" data-action="refresh" aria-label="Aktualisieren">↻</button></div>
+      </header>
+      <main id="content" class="content" tabindex="-1"></main>
+    </div>
+  </div>
+
+  <dialog id="modal"><form method="dialog" class="modal-card"><header><div><p class="eyebrow" id="modal-kicker"></p><h2 id="modal-title"></h2></div><button class="icon-button" value="cancel" aria-label="Schließen">×</button></header><div id="modal-body"></div></form></dialog>
+</body>
+</html>

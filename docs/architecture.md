@@ -3,8 +3,11 @@
 ## Zielbild
 
 Certify ist eine Einzelknoten-Anwendung für RHEL 10.2. FastAPI stellt eine
-REST-Schnittstelle und zunächst eine schlanke, serverseitig ausgelieferte
-Oberfläche bereit. SQLite vermeidet einen verpflichtenden Datenbankdienst.
+REST-Schnittstelle und eine responsive, direkt vom Dienst ausgelieferte
+Single-Page-Oberfläche bereit. Das Frontend verwendet keine externen CDN- oder
+Laufzeitabhängigkeiten; Navigation und Seitenrenderer sind zentral registriert,
+damit neue Funktionsbereiche ergänzt werden können. SQLite vermeidet einen
+verpflichtenden Datenbankdienst.
 Zeitgesteuerte Erneuerungen werden zukünftig durch einen systemd-Timer und
 einen transaktionalen Jobbestand in derselben Datenbank ausgeführt. Dadurch
 sind weder Redis noch Celery noch Container erforderlich.
