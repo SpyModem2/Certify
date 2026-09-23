@@ -148,9 +148,19 @@ Zielserver übertragen und dort als `root` ausführen:
 Das Installationsprogramm führt anschließend Schritt für Schritt durch die
 Konfiguration. Es erklärt jede benötigte Angabe (Browser-DNS-Namen,
 Sitzungsdauer, Mailserver und Administratorkonto), erzeugt das Systemgeheimnis
-automatisch und kann den Dienst direkt starten. Für automatisierte Installationen
-kann `CERTIFY_NON_INTERACTIVE=true` zusammen mit den in der Tabelle genannten
-`CERTIFY_*`-Variablen gesetzt werden.
+automatisch und kann den Dienst direkt starten. Eine laufende `firewalld` wird
+dauerhaft und sofort für HTTPS freigeschaltet; bei Let's Encrypt wird zusätzlich
+HTTP für die initiale Ausstellung und spätere Erneuerungen geöffnet. Bei aktivem
+SELinux stellt das Skript außerdem mit `restorecon` die von RHEL vorgesehenen
+Dateikontexte für Konfiguration, Programm und Zustandsdaten wieder her. Fehlt
+`restorecon` bei aktivem SELinux, fragt die interaktive Installation, ob das
+benötigte RHEL-Paket `policycoreutils` direkt mit `dnf` installiert werden soll.
+Für automatisierte Installationen steuert
+`CERTIFY_INSTALL_MISSING_PACKAGES=true` beziehungsweise `false`, ob fehlende
+Pflichtpakete ohne Rückfrage installiert werden; ohne diese Angabe schlägt eine
+nicht-interaktive Installation bei einem fehlenden Pflichtpaket sicher fehl.
+`CERTIFY_NON_INTERACTIVE=true` kann außerdem zusammen mit den in der Tabelle
+genannten `CERTIFY_*`-Variablen gesetzt werden.
 
 Container werden weder benötigt noch unterstützt.
 
