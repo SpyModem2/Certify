@@ -1,0 +1,5 @@
+CERTIFY_DATA_DIR=/var/lib/certify
+CERTIFY_SECRET=replace-with-at-least-32-random-characters
+CERTIFY_SESSION_MINUTES=30
+CERTIFY_TRUSTED_HOSTS=certify.example.internal
+CERTIFY_DEBUG=false
