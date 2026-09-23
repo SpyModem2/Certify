@@ -17,6 +17,9 @@ manipulationserkennbare Audit-Kette in einer zweisprachigen Webanwendung.
 - HTTP-01- und DNS-01-Provider-Schnittstellen inklusive Custom-DNS-Webhook
 - Zertifikatsinventar für verwaltete Schlüssel und externe CSR
 - Zieladapter für Linux/SSH, IIS/PowerShell-over-SSH und FortiGate 7.4
+- benutzerbezogene Zertifikatszuweisung, CSR-Upload und verschlüsselte lokale Schlüssel
+- Systeminventar und explizite Zertifikat-System-Zuordnung; Zugangsdaten werden AEAD-verschlüsselt
+- wählbare E-Mail-Benachrichtigungsstufen über einen lokalen SMTP-Relay
 - append-only Audit-Log mit HMAC-verketteten Einträgen und Verifikation
 - Deutsch und Englisch über den `Accept-Language`-Header
 - SQLite im Einzelknotenbetrieb; keine Redis-, Celery- oder Docker-Abhängigkeit
@@ -50,6 +53,8 @@ abgefragt. API-Dokumentation: `http://127.0.0.1:8080/docs`.
 | `CERTIFY_SESSION_MINUTES` | Sitzungsdauer | `30` |
 | `CERTIFY_TRUSTED_HOSTS` | kommaseparierte Hostnamen | `localhost,127.0.0.1` |
 | `CERTIFY_DEBUG` | Entwicklungsmodus | `false` |
+| `CERTIFY_SMTP_HOST` / `CERTIFY_SMTP_PORT` | lokaler SMTP-Relay | `localhost` / `25` |
+| `CERTIFY_MAIL_FROM` | Absenderadresse | `certify@localhost` |
 
 Ohne explizites `CERTIFY_SECRET` startet der Server nicht. Geheimnisse gehören
 in eine root-lesbare Environment-Datei, nicht in die Kommandozeile oder ins
@@ -72,6 +77,15 @@ systemctl enable --now certify
 ```
 
 Container werden weder benötigt noch unterstützt.
+
+## Online-Installation
+
+Wenn der Zielserver PyPI erreichen kann, installiert das Online-Skript die über
+`CERTIFY_VERSION` auswählbare veröffentlichte Version samt Abhängigkeiten:
+
+```bash
+sudo CERTIFY_VERSION=0.1.0 ./packaging/install-online.sh
+```
 
 ## Tests
 

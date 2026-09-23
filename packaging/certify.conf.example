@@ -3,3 +3,6 @@ CERTIFY_SECRET=replace-with-at-least-32-random-characters
 CERTIFY_SESSION_MINUTES=30
 CERTIFY_TRUSTED_HOSTS=certify.example.internal
 CERTIFY_DEBUG=false
+CERTIFY_SMTP_HOST=localhost
+CERTIFY_SMTP_PORT=25
+CERTIFY_MAIL_FROM=certify@localhost

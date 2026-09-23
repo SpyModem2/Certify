@@ -6,6 +6,10 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Literal
 
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.x509.oid import NameOID
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response, status
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from pydantic import BaseModel, Field
@@ -13,8 +17,10 @@ from pydantic import BaseModel, Field
 from .audit import AuditLog
 from .config import Settings
 from .database import Database
+from .mailer import send_local_mail
 from .providers import validate_acme_directory
 from .security import hash_password, sign_token, verify_password, verify_token, verify_totp
+from .secrets import SecretBox
 
 
 class LoginRequest(BaseModel):
@@ -27,6 +33,7 @@ class UserCreate(BaseModel):
     username: str = Field(pattern=r"^[a-zA-Z0-9_.@-]{1,128}$")
     password: str = Field(min_length=12, max_length=1024)
     role: Literal["admin", "operator", "auditor"] = "operator"
+    email: str | None = Field(default=None, max_length=320)
 
 
 class CertificateCreate(BaseModel):
@@ -42,6 +49,24 @@ class TargetCreate(BaseModel):
     name: str = Field(min_length=1, max_length=128)
     adapter: Literal["linux-ssh", "iis-ssh", "fortigate-7.4"]
     config: dict[str, object] = Field(default_factory=dict)
+    hostname: str | None = Field(default=None, max_length=253)
+    ip_address: str | None = Field(default=None, max_length=45)
+    credentials: dict[str, str] = Field(default_factory=dict)
+
+
+class CsrUpload(BaseModel):
+    csr_pem: str = Field(min_length=32, max_length=131072)
+
+
+class NotificationPreferences(BaseModel):
+    email: str | None = Field(default=None, max_length=320)
+    level: Literal["none", "errors", "expiry", "all"]
+
+
+class Notification(BaseModel):
+    category: Literal["errors", "expiry", "issued"]
+    subject: str = Field(min_length=1, max_length=200)
+    message: str = Field(min_length=1, max_length=10000)
 
 
 class Principal(BaseModel):
@@ -54,6 +79,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or Settings.from_env()
     database = Database(settings.data_dir / "certify.db")
     audit = AuditLog(database, settings.secret)
+    secret_box = SecretBox(settings.secret)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -110,7 +136,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def create_user(body: UserCreate, actor: Annotated[Principal, Depends(roles("admin"))]) -> dict[str, object]:
         try:
             with database.connect() as connection:
-                cursor = connection.execute("INSERT INTO users(username,password_hash,role) VALUES(?,?,?)", (body.username, hash_password(body.password), body.role))
+                cursor = connection.execute("INSERT INTO users(username,password_hash,role,email) VALUES(?,?,?,?)", (body.username, hash_password(body.password), body.role, body.email))
         except Exception as error:
             if "UNIQUE constraint" in str(error):
                 raise HTTPException(status.HTTP_409_CONFLICT, "username already exists") from error
@@ -119,9 +145,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {"id": cursor.lastrowid, "username": body.username, "role": body.role}
 
     @app.get("/api/v1/certificates")
-    def certificates(_: Annotated[Principal, Depends(principal)]) -> list[dict[str, object]]:
+    def certificates(actor: Annotated[Principal, Depends(principal)]) -> list[dict[str, object]]:
         with database.connect() as connection:
-            rows = connection.execute("SELECT id,common_name,sans,challenge,key_mode,status,not_after,created_at FROM certificates ORDER BY id DESC").fetchall()
+            if actor.role in ("admin", "auditor"):
+                rows = connection.execute("SELECT id,common_name,sans,challenge,key_mode,status,not_after,created_at FROM certificates ORDER BY id DESC").fetchall()
+            else:
+                rows = connection.execute("SELECT c.id,c.common_name,c.sans,c.challenge,c.key_mode,c.status,c.not_after,c.created_at FROM certificates c JOIN certificate_users cu ON cu.certificate_id=c.id WHERE cu.user_id=? ORDER BY c.id DESC", (actor.id,)).fetchall()
         return [{**dict(row), "sans": json.loads(row["sans"])} for row in rows]
 
     @app.post("/api/v1/certificates", status_code=201)
@@ -134,6 +163,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "csr_pem is required for CSR mode")
         with database.connect() as connection:
             cursor = connection.execute("INSERT INTO certificates(common_name,sans,acme_directory,challenge,key_mode,csr_pem,created_by) VALUES(?,?,?,?,?,?,?)", (body.common_name, json.dumps(body.sans), body.acme_directory, body.challenge, body.key_mode, body.csr_pem, actor.id))
+            connection.execute("INSERT INTO certificate_users(certificate_id,user_id) VALUES(?,?)", (cursor.lastrowid, actor.id))
         audit.append(actor.username, "certificate.request", f"certificate:{cursor.lastrowid}", {"common_name": body.common_name, "challenge": body.challenge, "key_mode": body.key_mode})
         return {"id": cursor.lastrowid, "status": "pending"}
 
@@ -141,22 +171,120 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def download_certificate(certificate_id: int, actor: Annotated[Principal, Depends(roles("admin", "operator"))], include_key: bool = False) -> Response:
         with database.connect() as connection:
             row = connection.execute("SELECT * FROM certificates WHERE id=?", (certificate_id,)).fetchone()
+            assigned = actor.role == "admin" or connection.execute("SELECT 1 FROM certificate_users WHERE certificate_id=? AND user_id=?", (certificate_id, actor.id)).fetchone()
+        if not assigned:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "certificate is not assigned to this user")
         if not row or not row["certificate_pem"]:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "issued certificate not found")
         content = row["certificate_pem"]
         if include_key:
             if not row["private_key_pem"]:
                 raise HTTPException(status.HTTP_409_CONFLICT, "private key is not managed by Certify")
-            content += "\n" + row["private_key_pem"]
+            key = row["private_key_pem"]
+            if key.startswith("v1."):
+                key = secret_box.decrypt(key, context=f"certificate:{certificate_id}").decode()
+            content += "\n" + key
         audit.append(actor.username, "certificate.download", f"certificate:{certificate_id}", {"private_key": include_key})
         return Response(content, media_type="application/x-pem-file", headers={"Content-Disposition": f'attachment; filename="certificate-{certificate_id}.pem"', "Cache-Control": "no-store"})
 
     @app.post("/api/v1/targets", status_code=201)
     def create_target(body: TargetCreate, actor: Annotated[Principal, Depends(roles("admin"))]) -> dict[str, object]:
         with database.connect() as connection:
-            cursor = connection.execute("INSERT INTO targets(name,adapter,config) VALUES(?,?,?)", (body.name, body.adapter, json.dumps(body.config)))
+            encrypted = secret_box.encrypt(body.credentials, context=f"target:{body.name}") if body.credentials else None
+            cursor = connection.execute("INSERT INTO targets(name,adapter,hostname,ip_address,config,secret_config) VALUES(?,?,?,?,?,?)", (body.name, body.adapter, body.hostname, body.ip_address, json.dumps(body.config), encrypted))
         audit.append(actor.username, "target.create", f"target:{cursor.lastrowid}", {"name": body.name, "adapter": body.adapter})
         return {"id": cursor.lastrowid, "name": body.name, "adapter": body.adapter}
+
+    def require_certificate_access(certificate_id: int, actor: Principal) -> None:
+        if actor.role == "admin":
+            return
+        with database.connect() as connection:
+            assigned = connection.execute("SELECT 1 FROM certificate_users WHERE certificate_id=? AND user_id=?", (certificate_id, actor.id)).fetchone()
+        if not assigned:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "certificate is not assigned to this user")
+
+    @app.put("/api/v1/certificates/{certificate_id}/users/{user_id}", status_code=204)
+    def assign_user(certificate_id: int, user_id: int, actor: Annotated[Principal, Depends(roles("admin"))]) -> Response:
+        try:
+            with database.connect() as connection:
+                connection.execute("INSERT OR IGNORE INTO certificate_users(certificate_id,user_id) VALUES(?,?)", (certificate_id, user_id))
+        except Exception as error:
+            if "FOREIGN KEY" in str(error):
+                raise HTTPException(status.HTTP_404_NOT_FOUND, "certificate or user not found") from error
+            raise
+        audit.append(actor.username, "certificate.user.assign", f"certificate:{certificate_id}", {"user_id": user_id})
+        return Response(status_code=204)
+
+    @app.put("/api/v1/certificates/{certificate_id}/targets/{target_id}", status_code=204)
+    def assign_target(certificate_id: int, target_id: int, actor: Annotated[Principal, Depends(roles("admin"))]) -> Response:
+        try:
+            with database.connect() as connection:
+                connection.execute("INSERT OR IGNORE INTO certificate_targets(certificate_id,target_id) VALUES(?,?)", (certificate_id, target_id))
+        except Exception as error:
+            if "FOREIGN KEY" in str(error):
+                raise HTTPException(status.HTTP_404_NOT_FOUND, "certificate or target not found") from error
+            raise
+        audit.append(actor.username, "certificate.target.assign", f"certificate:{certificate_id}", {"target_id": target_id})
+        return Response(status_code=204)
+
+    @app.put("/api/v1/certificates/{certificate_id}/csr", status_code=204)
+    def upload_csr(certificate_id: int, body: CsrUpload, actor: Annotated[Principal, Depends(roles("admin", "operator"))]) -> Response:
+        require_certificate_access(certificate_id, actor)
+        try:
+            x509.load_pem_x509_csr(body.csr_pem.encode())
+        except ValueError as error:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "invalid PEM CSR") from error
+        with database.connect() as connection:
+            result = connection.execute("UPDATE certificates SET csr_pem=?,key_mode='csr',private_key_pem=NULL,status='pending',updated_at=CURRENT_TIMESTAMP WHERE id=?", (body.csr_pem, certificate_id))
+        if not result.rowcount:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "certificate not found")
+        audit.append(actor.username, "certificate.csr.upload", f"certificate:{certificate_id}")
+        return Response(status_code=204)
+
+    @app.post("/api/v1/certificates/{certificate_id}/generate-key")
+    def generate_key(certificate_id: int, actor: Annotated[Principal, Depends(roles("admin", "operator"))]) -> dict[str, str]:
+        require_certificate_access(certificate_id, actor)
+        with database.connect() as connection:
+            row = connection.execute("SELECT common_name,sans FROM certificates WHERE id=?", (certificate_id,)).fetchone()
+        if not row:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "certificate not found")
+        key = ec.generate_private_key(ec.SECP384R1())
+        names = [row["common_name"], *json.loads(row["sans"])]
+        csr = x509.CertificateSigningRequestBuilder().subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, row["common_name"])])).add_extension(x509.SubjectAlternativeName([x509.DNSName(name) for name in names]), critical=False).sign(key, hashes.SHA384())
+        private_pem = key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()).decode()
+        csr_pem = csr.public_bytes(serialization.Encoding.PEM).decode()
+        encrypted = secret_box.encrypt(private_pem, context=f"certificate:{certificate_id}")
+        with database.connect() as connection:
+            connection.execute("UPDATE certificates SET key_mode='managed',private_key_pem=?,csr_pem=?,status='pending',updated_at=CURRENT_TIMESTAMP WHERE id=?", (encrypted, csr_pem, certificate_id))
+        audit.append(actor.username, "certificate.key.generate", f"certificate:{certificate_id}")
+        return {"csr_pem": csr_pem}
+
+    @app.put("/api/v1/users/me/notifications")
+    def notification_preferences(body: NotificationPreferences, actor: Annotated[Principal, Depends(principal)]) -> dict[str, object]:
+        if body.level != "none" and not body.email:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "email is required when notifications are enabled")
+        with database.connect() as connection:
+            connection.execute("UPDATE users SET email=?,notify_level=? WHERE id=?", (body.email, body.level, actor.id))
+        audit.append(actor.username, "user.notifications.update", f"user:{actor.id}", {"level": body.level})
+        return {"email": body.email, "level": body.level}
+
+    @app.post("/api/v1/notifications/send")
+    def send_notification(body: Notification, actor: Annotated[Principal, Depends(roles("admin"))]) -> dict[str, int]:
+        accepted = {
+            "errors": ("errors", "expiry", "all"),
+            "expiry": ("expiry", "all"),
+            "issued": ("all",),
+        }[body.category]
+        placeholders = ",".join("?" for _ in accepted)
+        with database.connect() as connection:
+            recipients = connection.execute(
+                f"SELECT email FROM users WHERE active=1 AND email IS NOT NULL AND notify_level IN ({placeholders})",
+                accepted,
+            ).fetchall()
+        for recipient in recipients:
+            send_local_mail(settings.smtp_host, settings.smtp_port, settings.mail_from, recipient["email"], body.subject, body.message)
+        audit.append(actor.username, "notification.send", "users", {"category": body.category, "recipients": len(recipients)})
+        return {"recipients": len(recipients)}
 
     @app.get("/api/v1/audit/verify")
     def verify_audit(_: Annotated[Principal, Depends(roles("admin", "auditor"))]) -> dict[str, object]:
