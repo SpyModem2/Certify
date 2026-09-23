@@ -6,6 +6,7 @@ from certify.api import create_app
 from certify.config import Settings
 from certify.database import Database
 from certify.security import hash_password
+from certify.security import totp
 
 
 def app_client(tmp_path: Path) -> TestClient:
@@ -176,3 +177,59 @@ def test_api_key_inherits_role_and_can_be_read_only(tmp_path: Path) -> None:
         key_id = created.json()["id"]
         assert client.delete(f"/api/v1/api-keys/{key_id}", headers=session_headers).status_code == 204
         assert client.get("/api/v1/certificates", headers=api_headers).status_code == 401
+
+
+def test_user_identity_email_and_totp_lifecycle(tmp_path: Path) -> None:
+    with app_client(tmp_path) as client:
+        login = client.post(
+            "/api/v1/auth/login",
+            json={"username": "admin", "password": "Correct horse battery staple!7"},
+        )
+        headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+
+        incomplete = client.post(
+            "/api/v1/users",
+            headers=headers,
+            json={"username": "missing", "password": "A sufficiently Strong!9", "role": "operator"},
+        )
+        assert incomplete.status_code == 422
+        created = client.post(
+            "/api/v1/users",
+            headers=headers,
+            json={
+                "username": "alice",
+                "first_name": "Alice",
+                "last_name": "Example",
+                "email": "alice@example.test",
+                "password": "A sufficiently Strong!9",
+                "role": "operator",
+            },
+        )
+        assert created.status_code == 201
+        assert created.json()["first_name"] == "Alice"
+
+        changed = client.put(
+            "/api/v1/users/me/email", headers=headers, json={"email": "admin@example.test"}
+        )
+        assert changed.json() == {"email": "admin@example.test"}
+        assert client.get("/api/v1/users/me", headers=headers).json()["email"] == "admin@example.test"
+
+        setup = client.post("/api/v1/users/me/totp/setup", headers=headers)
+        assert setup.status_code == 200
+        assert setup.json()["otpauth_uri"].startswith("otpauth://totp/Certify%3Aadmin?")
+        confirmation = client.post(
+            "/api/v1/users/me/totp/confirm",
+            headers=headers,
+            json={"code": totp(setup.json()["secret"])},
+        )
+        assert confirmation.status_code == 204
+        assert client.get("/api/v1/users/me", headers=headers).json()["totp_enabled"] == 1
+
+        without_code = client.post(
+            "/api/v1/auth/login",
+            json={"username": "admin", "password": "Correct horse battery staple!7"},
+        )
+        assert without_code.status_code == 401
+        reset = client.delete("/api/v1/users/1/totp", headers=headers)
+        assert reset.status_code == 204
+        assert client.get("/api/v1/users/me", headers=headers).json()["totp_enabled"] == 0

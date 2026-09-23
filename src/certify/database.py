@@ -11,7 +11,8 @@ PRAGMA foreign_keys = ON;
 CREATE TABLE IF NOT EXISTS users (
  id INTEGER PRIMARY KEY, username TEXT NOT NULL UNIQUE,
  password_hash TEXT NOT NULL, role TEXT NOT NULL CHECK(role IN ('admin','operator','auditor')),
- totp_secret TEXT, email TEXT, notify_level TEXT NOT NULL DEFAULT 'errors'
+ first_name TEXT, last_name TEXT, totp_secret TEXT, totp_pending_secret TEXT,
+ email TEXT, notify_level TEXT NOT NULL DEFAULT 'errors'
  CHECK(notify_level IN ('none','errors','expiry','all')), active INTEGER NOT NULL DEFAULT 1,
  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -77,6 +78,12 @@ class Database:
             user_columns = {row["name"] for row in connection.execute("PRAGMA table_info(users)")}
             if "email" not in user_columns:
                 connection.execute("ALTER TABLE users ADD COLUMN email TEXT")
+            if "first_name" not in user_columns:
+                connection.execute("ALTER TABLE users ADD COLUMN first_name TEXT")
+            if "last_name" not in user_columns:
+                connection.execute("ALTER TABLE users ADD COLUMN last_name TEXT")
+            if "totp_pending_secret" not in user_columns:
+                connection.execute("ALTER TABLE users ADD COLUMN totp_pending_secret TEXT")
             if "notify_level" not in user_columns:
                 connection.execute("ALTER TABLE users ADD COLUMN notify_level TEXT NOT NULL DEFAULT 'errors'")
             target_columns = {row["name"] for row in connection.execute("PRAGMA table_info(targets)")}

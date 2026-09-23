@@ -3,6 +3,7 @@ import hmac
 import json
 import secrets
 import time
+from urllib.parse import quote
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -23,7 +24,7 @@ from .config import Settings
 from .database import Database
 from .mailer import send_local_mail
 from .providers import validate_acme_directory
-from .security import PASSWORD_POLICY, hash_password, sign_token, validate_password, verify_password, verify_token, verify_totp
+from .security import PASSWORD_POLICY, hash_password, new_totp_secret, sign_token, validate_password, verify_password, verify_token, verify_totp
 from .secrets import SecretBox
 
 
@@ -35,15 +36,35 @@ class LoginRequest(BaseModel):
 
 class UserCreate(BaseModel):
     username: str = Field(pattern=r"^[a-zA-Z0-9_.@-]{1,128}$")
+    first_name: str = Field(min_length=1, max_length=128)
+    last_name: str = Field(min_length=1, max_length=128)
     password: str = Field(min_length=14, max_length=1024, description=PASSWORD_POLICY)
     role: Literal["admin", "operator", "auditor"] = "operator"
-    email: str | None = Field(default=None, max_length=320)
+    email: str = Field(min_length=3, max_length=320)
 
     @field_validator("password")
     @classmethod
     def complex_password(cls, password: str) -> str:
         validate_password(password)
         return password
+
+    @field_validator("first_name", "last_name", "email")
+    @classmethod
+    def non_empty_fields(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("field must not be empty")
+        return value
+
+    @field_validator("email")
+    @classmethod
+    def valid_email(cls, value: str) -> str:
+        if value.count("@") != 1 or any(character.isspace() for character in value):
+            raise ValueError("invalid email address")
+        local, domain = value.rsplit("@", 1)
+        if not local or "." not in domain or domain.startswith(".") or domain.endswith("."):
+            raise ValueError("invalid email address")
+        return value
 
 
 class PasswordChange(BaseModel):
@@ -55,6 +76,25 @@ class PasswordChange(BaseModel):
     def complex_password(cls, password: str) -> str:
         validate_password(password)
         return password
+
+
+class EmailChange(BaseModel):
+    email: str = Field(min_length=3, max_length=320)
+
+    @field_validator("email")
+    @classmethod
+    def valid_email(cls, value: str) -> str:
+        value = value.strip()
+        if value.count("@") != 1 or any(character.isspace() for character in value):
+            raise ValueError("invalid email address")
+        local, domain = value.rsplit("@", 1)
+        if not local or "." not in domain or domain.startswith(".") or domain.endswith("."):
+            raise ValueError("invalid email address")
+        return value
+
+
+class TotpConfirm(BaseModel):
+    code: str = Field(pattern=r"^\d{6}$")
 
 
 class ApiKeyCreate(BaseModel):
@@ -202,7 +242,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def current_user(actor: Annotated[Principal, Depends(principal)]) -> dict[str, object]:
         with database.connect() as connection:
             row = connection.execute(
-                "SELECT id,username,role,email,notify_level,created_at FROM users WHERE id=?",
+                "SELECT id,username,first_name,last_name,role,email,notify_level,"
+                "totp_secret IS NOT NULL AS totp_enabled,created_at FROM users WHERE id=?",
                 (actor.id,),
             ).fetchone()
         if not row:
@@ -213,7 +254,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def list_users(_: Annotated[Principal, Depends(roles("admin"))]) -> list[dict[str, object]]:
         with database.connect() as connection:
             rows = connection.execute(
-                "SELECT id,username,role,email,notify_level,active,created_at FROM users ORDER BY username"
+                "SELECT id,username,first_name,last_name,role,email,notify_level,active,"
+                "totp_secret IS NOT NULL AS totp_enabled,created_at FROM users ORDER BY username"
             ).fetchall()
         return [dict(row) for row in rows]
 
@@ -222,14 +264,63 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         try:
             with database.connect() as connection:
                 password_hash = hash_password(body.password)
-                cursor = connection.execute("INSERT INTO users(username,password_hash,role,email) VALUES(?,?,?,?)", (body.username, password_hash, body.role, body.email))
+                cursor = connection.execute(
+                    "INSERT INTO users(username,first_name,last_name,password_hash,role,email) VALUES(?,?,?,?,?,?)",
+                    (body.username, body.first_name, body.last_name, password_hash, body.role, body.email),
+                )
                 connection.execute("INSERT INTO password_history(user_id,password_hash) VALUES(?,?)", (cursor.lastrowid, password_hash))
         except Exception as error:
             if "UNIQUE constraint" in str(error):
                 raise HTTPException(status.HTTP_409_CONFLICT, "username already exists") from error
             raise
         audit.append(actor.username, "user.create", f"user:{cursor.lastrowid}", {"username": body.username, "role": body.role})
-        return {"id": cursor.lastrowid, "username": body.username, "role": body.role}
+        return {"id": cursor.lastrowid, "username": body.username, "first_name": body.first_name,
+                "last_name": body.last_name, "email": body.email, "role": body.role}
+
+    @app.put("/api/v1/users/me/email")
+    def change_email(body: EmailChange, actor: Annotated[Principal, Depends(principal)]) -> dict[str, str]:
+        with database.connect() as connection:
+            connection.execute("UPDATE users SET email=? WHERE id=?", (body.email, actor.id))
+        audit.append(actor.username, "user.email.change", f"user:{actor.id}")
+        return {"email": body.email}
+
+    @app.post("/api/v1/users/me/totp/setup")
+    def setup_totp(actor: Annotated[Principal, Depends(principal)]) -> dict[str, str]:
+        if actor.api_key_id is not None:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "TOTP setup requires a user session")
+        secret = new_totp_secret()
+        with database.connect() as connection:
+            connection.execute("UPDATE users SET totp_pending_secret=? WHERE id=?", (secret, actor.id))
+        label = quote(f"Certify:{actor.username}", safe="")
+        uri = f"otpauth://totp/{label}?secret={secret}&issuer=Certify&digits=6&period=30"
+        audit.append(actor.username, "user.totp.setup.started", f"user:{actor.id}")
+        return {"secret": secret, "otpauth_uri": uri}
+
+    @app.post("/api/v1/users/me/totp/confirm", status_code=204)
+    def confirm_totp(body: TotpConfirm, actor: Annotated[Principal, Depends(principal)]) -> Response:
+        with database.connect() as connection:
+            user = connection.execute("SELECT totp_pending_secret FROM users WHERE id=?", (actor.id,)).fetchone()
+            if not user or not user["totp_pending_secret"]:
+                raise HTTPException(status.HTTP_409_CONFLICT, "no TOTP setup is pending")
+            if not verify_totp(user["totp_pending_secret"], body.code):
+                raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "invalid TOTP code")
+            connection.execute(
+                "UPDATE users SET totp_secret=totp_pending_secret,totp_pending_secret=NULL WHERE id=?", (actor.id,)
+            )
+        audit.append(actor.username, "user.totp.enabled", f"user:{actor.id}")
+        return Response(status_code=204)
+
+    @app.delete("/api/v1/users/{user_id}/totp", status_code=204)
+    def reset_totp(user_id: int, actor: Annotated[Principal, Depends(roles("admin"))]) -> Response:
+        with database.connect() as connection:
+            result = connection.execute(
+                "UPDATE users SET totp_secret=NULL,totp_pending_secret=NULL "
+                "WHERE id=? AND (totp_secret IS NOT NULL OR totp_pending_secret IS NOT NULL)", (user_id,)
+            )
+        if not result.rowcount:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "user has no TOTP settings")
+        audit.append(actor.username, "user.totp.reset", f"user:{user_id}")
+        return Response(status_code=204)
 
     @app.put("/api/v1/users/me/password", status_code=204)
     def change_password(body: PasswordChange, actor: Annotated[Principal, Depends(principal)]) -> Response:
