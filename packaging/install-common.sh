@@ -27,30 +27,35 @@ ask_yes_no() {
   [[ "$answer" =~ ^([jJ]|[jJ][aA]|[yY]|[yY][eE][sS])$ ]]
 }
 
-install_missing_package() {
-  local package="$1" purpose="$2" install_package=false
-
-  if [[ "${CERTIFY_INSTALL_MISSING_PACKAGES:-}" == "true" ]]; then
-    install_package=true
-  elif [[ "${CERTIFY_INSTALL_MISSING_PACKAGES:-}" == "false" ]]; then
-    install_package=false
-  elif [[ "${CERTIFY_NON_INTERACTIVE:-false}" != "true" && -t 0 ]]; then
-    if ask_yes_no "Das Paket ${package} fehlt (${purpose}). Soll es jetzt installiert werden?" "ja"; then
-      install_package=true
-    fi
-  fi
-
-  if [[ "$install_package" != "true" ]]; then
-    echo "Das benoetigte Paket ${package} wurde nicht installiert." >&2
-    echo "Erneut mit CERTIFY_INSTALL_MISSING_PACKAGES=true ausfuehren oder das Paket manuell installieren." >&2
-    return 1
-  fi
+install_packages() {
   command -v dnf >/dev/null 2>&1 || {
-    echo "${package} kann nicht automatisch installiert werden: dnf wurde nicht gefunden." >&2
+    echo "Erforderliche RHEL-Pakete koennen nicht installiert werden: dnf wurde nicht gefunden." >&2
     return 1
   }
-  echo "Installiere fehlendes RHEL-Paket: ${package}"
-  dnf install -y "$package"
+  echo "Installiere erforderliche RHEL-Pakete: $*"
+  dnf install -y "$@"
+}
+
+install_required_packages() {
+  # Install explicitly instead of assuming a particular RHEL base image. dnf is
+  # idempotent and leaves already installed packages untouched.
+  install_packages \
+    python3 python3-pip openssl ca-certificates \
+    coreutils grep sed hostname \
+    shadow-utils util-linux systemd policycoreutils
+
+  local command
+  for command in python3 openssl install useradd runuser systemctl restorecon; do
+    command -v "$command" >/dev/null 2>&1 || {
+      echo "Erforderliches Programm fehlt nach der Paketinstallation: ${command}" >&2
+      return 1
+    }
+  done
+
+  python3 -c 'import sys; raise SystemExit(sys.version_info < (3, 12))' || {
+    echo "Certify benoetigt Python 3.12 oder neuer." >&2
+    return 1
+  }
 }
 
 configure_firewall() {
@@ -91,7 +96,7 @@ configure_selinux() {
     return
   fi
   if ! command -v restorecon >/dev/null 2>&1; then
-    install_missing_package policycoreutils "restorecon fuer die SELinux-Dateikontexte" || return 1
+    install_packages policycoreutils || return 1
     command -v restorecon >/dev/null 2>&1 || {
       echo "restorecon fehlt auch nach der Installation von policycoreutils." >&2
       return 1
@@ -217,7 +222,10 @@ configure_tls() {
         ask_config_value email "E-Mail-Adresse fuer Ablauf- und Kontohinweise (oder -):" "$email"
       fi
       [[ -n "$domain" && -n "$email" ]] || { echo "CERTIFY_TLS_DOMAIN und CERTIFY_TLS_EMAIL sind erforderlich." >&2; return 1; }
-      command -v certbot >/dev/null || { echo "certbot fehlt. Bitte zuerst das RHEL-Paket certbot installieren." >&2; return 1; }
+      if ! command -v certbot >/dev/null 2>&1; then
+        install_packages certbot
+      fi
+      command -v certbot >/dev/null 2>&1 || { echo "certbot fehlt nach der Paketinstallation." >&2; return 1; }
       /usr/local/sbin/certify-configure-tls letsencrypt "$domain" "$email"
       ;;
     *) echo "Unbekannter CERTIFY_TLS_MODE: $mode" >&2; return 1 ;;

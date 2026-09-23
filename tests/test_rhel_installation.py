@@ -78,7 +78,7 @@ def test_disabled_selinux_does_not_call_restorecon(tmp_path: Path) -> None:
     assert not (tmp_path / "calls").exists()
 
 
-def test_missing_selinux_package_can_be_installed_automatically(tmp_path: Path) -> None:
+def test_missing_selinux_package_is_installed_automatically(tmp_path: Path) -> None:
     _command(tmp_path, "getenforce", "echo Enforcing")
     _command(
         tmp_path,
@@ -88,26 +88,48 @@ def test_missing_selinux_package_can_be_installed_automatically(tmp_path: Path) 
         'chmod +x "$(dirname "$0")/restorecon"',
     )
 
-    result = _run_function(
-        tmp_path,
-        "configure_selinux",
-        {"CERTIFY_INSTALL_MISSING_PACKAGES": "true"},
-    )
+    result = _run_function(tmp_path, "configure_selinux")
 
     assert result.returncode == 0, result.stderr
     assert (tmp_path / "calls").read_text().splitlines()[0] == "install -y policycoreutils"
 
 
-def test_missing_selinux_package_is_not_silently_ignored(tmp_path: Path) -> None:
-    _command(tmp_path, "getenforce", "echo Enforcing")
+def test_required_rhel_packages_are_installed(tmp_path: Path) -> None:
     _command(tmp_path, "dnf", 'echo "$*" >>"$CALL_LOG"')
+    for command in ("python3", "openssl", "install", "useradd", "runuser", "systemctl", "restorecon"):
+        _command(tmp_path, command, "exit 0")
 
-    result = _run_function(
-        tmp_path,
-        "configure_selinux",
-        {"CERTIFY_NON_INTERACTIVE": "true"},
-    )
+    result = _run_function(tmp_path, "install_required_packages")
 
-    assert result.returncode == 1
-    assert "CERTIFY_INSTALL_MISSING_PACKAGES=true" in result.stderr
-    assert not (tmp_path / "calls").exists()
+    assert result.returncode == 0, result.stderr
+    packages = (tmp_path / "calls").read_text()
+    assert packages.startswith("install -y ")
+    for package in (
+        "python3",
+        "python3-pip",
+        "openssl",
+        "ca-certificates",
+        "coreutils",
+        "grep",
+        "sed",
+        "hostname",
+        "shadow-utils",
+        "util-linux",
+        "systemd",
+        "policycoreutils",
+    ):
+        assert package in packages.split()
+
+
+def test_installers_install_system_packages_before_creating_the_service_user() -> None:
+    for name in ("install-online.sh", "install-offline.sh"):
+        script = (ROOT / "packaging" / name).read_text()
+        assert script.index("install_required_packages") < script.index("id certify")
+
+
+def test_online_installer_uses_local_project_source() -> None:
+    script = (ROOT / "packaging" / "install-online.sh").read_text()
+
+    assert 'pip install "$root"' in script
+    assert "CERTIFY_VERSION" not in script
+    assert "certify-server==" not in script
