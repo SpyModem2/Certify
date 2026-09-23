@@ -27,6 +27,85 @@ ask_yes_no() {
   [[ "$answer" =~ ^([jJ]|[jJ][aA]|[yY]|[yY][eE][sS])$ ]]
 }
 
+install_missing_package() {
+  local package="$1" purpose="$2" install_package=false
+
+  if [[ "${CERTIFY_INSTALL_MISSING_PACKAGES:-}" == "true" ]]; then
+    install_package=true
+  elif [[ "${CERTIFY_INSTALL_MISSING_PACKAGES:-}" == "false" ]]; then
+    install_package=false
+  elif [[ "${CERTIFY_NON_INTERACTIVE:-false}" != "true" && -t 0 ]]; then
+    if ask_yes_no "Das Paket ${package} fehlt (${purpose}). Soll es jetzt installiert werden?" "ja"; then
+      install_package=true
+    fi
+  fi
+
+  if [[ "$install_package" != "true" ]]; then
+    echo "Das benoetigte Paket ${package} wurde nicht installiert." >&2
+    echo "Erneut mit CERTIFY_INSTALL_MISSING_PACKAGES=true ausfuehren oder das Paket manuell installieren." >&2
+    return 1
+  fi
+  command -v dnf >/dev/null 2>&1 || {
+    echo "${package} kann nicht automatisch installiert werden: dnf wurde nicht gefunden." >&2
+    return 1
+  }
+  echo "Installiere fehlendes RHEL-Paket: ${package}"
+  dnf install -y "$package"
+}
+
+configure_firewall() {
+  local tls_mode="$1"
+  local -a services=(https)
+
+  if ! command -v firewall-cmd >/dev/null 2>&1; then
+    echo "firewall-cmd ist nicht installiert; keine Firewall-Regel wurde geaendert."
+    return
+  fi
+  if ! firewall-cmd --state >/dev/null 2>&1; then
+    echo "firewalld ist nicht aktiv; keine Firewall-Regel wurde geaendert."
+    return
+  fi
+
+  # The standalone Let's Encrypt authenticator also needs HTTP for initial
+  # issuance and all later renewals.
+  if [[ "$tls_mode" == "letsencrypt" ]]; then
+    services+=(http)
+  fi
+  local service
+  for service in "${services[@]}"; do
+    firewall-cmd --permanent --add-service="$service"
+    firewall-cmd --add-service="$service"
+  done
+  echo "firewalld wurde fuer folgende Dienste freigeschaltet: ${services[*]}"
+}
+
+configure_selinux() {
+  local state
+  if ! command -v getenforce >/dev/null 2>&1; then
+    echo "SELinux-Werkzeuge wurden nicht gefunden; keine Dateikontexte wurden angepasst."
+    return
+  fi
+  state="$(getenforce)"
+  if [[ "$state" == "Disabled" ]]; then
+    echo "SELinux ist deaktiviert; keine Dateikontexte wurden angepasst."
+    return
+  fi
+  if ! command -v restorecon >/dev/null 2>&1; then
+    install_missing_package policycoreutils "restorecon fuer die SELinux-Dateikontexte" || return 1
+    command -v restorecon >/dev/null 2>&1 || {
+      echo "restorecon fehlt auch nach der Installation von policycoreutils." >&2
+      return 1
+    }
+  fi
+
+  # Re-apply the distribution policy after creating files below /etc, /opt and
+  # /var. Port 443 is part of the RHEL http_port_t policy and therefore needs
+  # no local, difficult-to-maintain SELinux port override.
+  restorecon -RF /etc/certify /opt/certify /var/lib/certify \
+    /etc/systemd/system/certify.service /usr/local/sbin/certify-configure-tls
+  echo "SELinux-Dateikontexte fuer Certify wurden wiederhergestellt (${state})."
+}
+
 configure_certify() {
   local config_file=/etc/certify/certify.conf
   if [[ -e "$config_file" ]]; then
@@ -143,6 +222,8 @@ configure_tls() {
       ;;
     *) echo "Unbekannter CERTIFY_TLS_MODE: $mode" >&2; return 1 ;;
   esac
+
+  CERTIFY_SELECTED_TLS_MODE="$mode"
 }
 
 finish_install() {
@@ -150,6 +231,8 @@ finish_install() {
   configure_certify
   configure_tls "$root"
   install -m 0644 "$root/packaging/certify.service" /etc/systemd/system/certify.service
+  configure_firewall "$CERTIFY_SELECTED_TLS_MODE"
+  configure_selinux
   systemctl daemon-reload
 
   if [[ "${CERTIFY_NON_INTERACTIVE:-false}" != "true" && -t 0 ]]; then
