@@ -12,7 +12,10 @@ manipulationserkennbare Audit-Kette in einer zweisprachigen Webanwendung.
 
 ## Funktionen
 
-- lokale Benutzerkonten mit `scrypt`-Passworthashes und optionaler TOTP-MFA
+- lokale Benutzerkonten mit `scrypt`-Passworthashes, verbindlicher Kennwortkomplexität,
+  Sperre der letzten 20 Kennwörter und optionaler TOTP-MFA
+- persönliche, widerrufbare API-Keys, die niemals mehr Rechte als ihr Benutzer haben
+  und auf reinen Lesezugriff eingeschränkt werden können
 - Rollen `admin`, `operator` und `auditor`
 - HTTP-01- und DNS-01-Provider-Schnittstellen inklusive Custom-DNS-Webhook
 - Zertifikatsinventar für verwaltete Schlüssel und externe CSR
@@ -43,6 +46,22 @@ certify serve --host 127.0.0.1 --port 8080
 
 Beim Anlegen des Administrators wird das initiale Passwort interaktiv
 abgefragt. API-Dokumentation: `http://127.0.0.1:8080/docs`.
+
+## Kennwort- und API-Key-Sicherheit
+
+Kennwörter müssen mindestens 14 Zeichen sowie Groß- und Kleinbuchstaben, eine
+Ziffer und ein Sonderzeichen enthalten. Beim Ändern eines Kennworts dürfen die
+letzten 20 Kennwörter nicht erneut verwendet werden. Die API beschreibt diese
+Regel ebenfalls direkt an allen Kennwortfeldern.
+
+Angemeldete Benutzer erstellen persönliche Schlüssel über `POST /api/v1/api-keys`
+mit `scope: "read"` (nur lesende Requests) oder `scope: "read_write"`. Ein Key
+übernimmt immer Rolle und Objektzuweisungen seines Benutzers und kann diese nie
+erweitern. Das Schlüsselgeheimnis wird nur einmal ausgegeben; serverseitig liegt
+nur ein mit dem Systemgeheimnis gebildeter HMAC. `GET /api/v1/api-keys` listet
+Metadaten, `DELETE /api/v1/api-keys/{id}` widerruft einen Key sofort. Der Key wird
+wie eine Sitzung als `Authorization: Bearer certify_…` gesendet. Aus
+Sicherheitsgründen können API-Keys keine weiteren Keys erzeugen.
 
 ## Konfiguration
 

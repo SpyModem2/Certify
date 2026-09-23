@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
+import secrets
 import time
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
@@ -12,14 +15,14 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response, status
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from .audit import AuditLog
 from .config import Settings
 from .database import Database
 from .mailer import send_local_mail
 from .providers import validate_acme_directory
-from .security import hash_password, sign_token, verify_password, verify_token, verify_totp
+from .security import PASSWORD_POLICY, hash_password, sign_token, validate_password, verify_password, verify_token, verify_totp
 from .secrets import SecretBox
 
 
@@ -31,9 +34,31 @@ class LoginRequest(BaseModel):
 
 class UserCreate(BaseModel):
     username: str = Field(pattern=r"^[a-zA-Z0-9_.@-]{1,128}$")
-    password: str = Field(min_length=12, max_length=1024)
+    password: str = Field(min_length=14, max_length=1024, description=PASSWORD_POLICY)
     role: Literal["admin", "operator", "auditor"] = "operator"
     email: str | None = Field(default=None, max_length=320)
+
+    @field_validator("password")
+    @classmethod
+    def complex_password(cls, password: str) -> str:
+        validate_password(password)
+        return password
+
+
+class PasswordChange(BaseModel):
+    current_password: str
+    new_password: str = Field(min_length=14, max_length=1024, description=PASSWORD_POLICY)
+
+    @field_validator("new_password")
+    @classmethod
+    def complex_password(cls, password: str) -> str:
+        validate_password(password)
+        return password
+
+
+class ApiKeyCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=128, pattern=r"^[a-zA-Z0-9_. -]+$")
+    scope: Literal["read", "read_write"] = "read"
 
 
 class CertificateCreate(BaseModel):
@@ -80,6 +105,8 @@ class Principal(BaseModel):
     id: int
     username: str
     role: str
+    api_key_id: int | None = None
+    api_scope: Literal["read", "read_write"] | None = None
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -99,10 +126,34 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.settings = settings
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=list(settings.trusted_hosts))
 
-    def principal(authorization: Annotated[str | None, Header()] = None) -> Principal:
+    def principal(request: Request, authorization: Annotated[str | None, Header()] = None) -> Principal:
         if not authorization or not authorization.startswith("Bearer "):
             raise HTTPException(status.HTTP_401_UNAUTHORIZED, "authentication required")
-        payload = verify_token(authorization[7:], settings.secret)
+        token = authorization[7:]
+        if token.startswith("certify_"):
+            try:
+                prefix, key_id, key_secret = token.split("_", 2)
+                if prefix != "certify" or not key_secret:
+                    raise ValueError
+                key_id_int = int(key_id)
+            except (ValueError, AssertionError):
+                raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid API key") from None
+            key_hash = hmac.new(settings.secret.encode(), token.encode(), hashlib.sha256).hexdigest()
+            with database.connect() as connection:
+                row = connection.execute(
+                    "SELECT k.id,k.key_hash,k.scope,u.id AS user_id,u.username,u.role "
+                    "FROM api_keys k JOIN users u ON u.id=k.user_id "
+                    "WHERE k.id=? AND k.revoked_at IS NULL AND u.active=1",
+                    (key_id_int,),
+                ).fetchone()
+                if row and hmac.compare_digest(row["key_hash"], key_hash):
+                    connection.execute("UPDATE api_keys SET last_used_at=CURRENT_TIMESTAMP WHERE id=?", (key_id_int,))
+            if not row or not hmac.compare_digest(row["key_hash"], key_hash):
+                raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid API key")
+            if request.method not in ("GET", "HEAD", "OPTIONS") and row["scope"] != "read_write":
+                raise HTTPException(status.HTTP_403_FORBIDDEN, "API key has read-only scope")
+            return Principal(id=row["user_id"], username=row["username"], role=row["role"], api_key_id=row["id"], api_scope=row["scope"])
+        payload = verify_token(token, settings.secret)
         if not payload:
             raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid or expired session")
         return Principal(id=int(payload["sub"]), username=payload["username"], role=payload["role"])
@@ -143,13 +194,70 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def create_user(body: UserCreate, actor: Annotated[Principal, Depends(roles("admin"))]) -> dict[str, object]:
         try:
             with database.connect() as connection:
-                cursor = connection.execute("INSERT INTO users(username,password_hash,role,email) VALUES(?,?,?,?)", (body.username, hash_password(body.password), body.role, body.email))
+                password_hash = hash_password(body.password)
+                cursor = connection.execute("INSERT INTO users(username,password_hash,role,email) VALUES(?,?,?,?)", (body.username, password_hash, body.role, body.email))
+                connection.execute("INSERT INTO password_history(user_id,password_hash) VALUES(?,?)", (cursor.lastrowid, password_hash))
         except Exception as error:
             if "UNIQUE constraint" in str(error):
                 raise HTTPException(status.HTTP_409_CONFLICT, "username already exists") from error
             raise
         audit.append(actor.username, "user.create", f"user:{cursor.lastrowid}", {"username": body.username, "role": body.role})
         return {"id": cursor.lastrowid, "username": body.username, "role": body.role}
+
+    @app.put("/api/v1/users/me/password", status_code=204)
+    def change_password(body: PasswordChange, actor: Annotated[Principal, Depends(principal)]) -> Response:
+        with database.connect() as connection:
+            user = connection.execute("SELECT password_hash FROM users WHERE id=?", (actor.id,)).fetchone()
+            if not user or not verify_password(body.current_password, user["password_hash"]):
+                raise HTTPException(status.HTTP_401_UNAUTHORIZED, "current password is incorrect")
+            history = connection.execute(
+                "SELECT password_hash FROM password_history WHERE user_id=? ORDER BY id DESC LIMIT 20", (actor.id,)
+            ).fetchall()
+            hashes = [user["password_hash"], *(row["password_hash"] for row in history)]
+            if any(verify_password(body.new_password, password_hash) for password_hash in dict.fromkeys(hashes)):
+                raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "The last 20 passwords cannot be reused.")
+            password_hash = hash_password(body.new_password)
+            connection.execute("UPDATE users SET password_hash=? WHERE id=?", (password_hash, actor.id))
+            connection.execute("INSERT INTO password_history(user_id,password_hash) VALUES(?,?)", (actor.id, password_hash))
+            connection.execute(
+                "DELETE FROM password_history WHERE user_id=? AND id NOT IN "
+                "(SELECT id FROM password_history WHERE user_id=? ORDER BY id DESC LIMIT 20)", (actor.id, actor.id)
+            )
+        audit.append(actor.username, "user.password.change", f"user:{actor.id}")
+        return Response(status_code=204)
+
+    @app.post("/api/v1/api-keys", status_code=201)
+    def create_api_key(body: ApiKeyCreate, actor: Annotated[Principal, Depends(principal)]) -> dict[str, object]:
+        if actor.api_key_id is not None:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "API keys cannot create other API keys")
+        raw_secret = secrets.token_urlsafe(32)
+        try:
+            with database.connect() as connection:
+                cursor = connection.execute("INSERT INTO api_keys(user_id,name,key_hash,scope) VALUES(?,?,?,?)", (actor.id, body.name, "pending", body.scope))
+                token = f"certify_{cursor.lastrowid}_{raw_secret}"
+                key_hash = hmac.new(settings.secret.encode(), token.encode(), hashlib.sha256).hexdigest()
+                connection.execute("UPDATE api_keys SET key_hash=? WHERE id=?", (key_hash, cursor.lastrowid))
+        except Exception as error:
+            if "UNIQUE constraint" in str(error):
+                raise HTTPException(status.HTTP_409_CONFLICT, "API key name already exists") from error
+            raise
+        audit.append(actor.username, "api_key.create", f"api_key:{cursor.lastrowid}", {"scope": body.scope})
+        return {"id": cursor.lastrowid, "name": body.name, "scope": body.scope, "key": token, "warning": "Store this key now; it will not be shown again."}
+
+    @app.get("/api/v1/api-keys")
+    def list_api_keys(actor: Annotated[Principal, Depends(principal)]) -> list[dict[str, object]]:
+        with database.connect() as connection:
+            rows = connection.execute("SELECT id,name,scope,created_at,last_used_at,revoked_at FROM api_keys WHERE user_id=? ORDER BY id", (actor.id,)).fetchall()
+        return [dict(row) for row in rows]
+
+    @app.delete("/api/v1/api-keys/{key_id}", status_code=204)
+    def revoke_api_key(key_id: int, actor: Annotated[Principal, Depends(principal)]) -> Response:
+        with database.connect() as connection:
+            result = connection.execute("UPDATE api_keys SET revoked_at=CURRENT_TIMESTAMP WHERE id=? AND user_id=? AND revoked_at IS NULL", (key_id, actor.id))
+        if not result.rowcount:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "active API key not found")
+        audit.append(actor.username, "api_key.revoke", f"api_key:{key_id}")
+        return Response(status_code=204)
 
     @app.get("/api/v1/certificates")
     def certificates(actor: Annotated[Principal, Depends(principal)]) -> list[dict[str, object]]:

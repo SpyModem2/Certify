@@ -12,7 +12,13 @@ sind weder Redis noch Celery noch Container erforderlich.
 ## Komponenten
 
 * **Identität:** lokale, personalisierte Konten; Passwörter werden mit scrypt
-  gehasht. Die TOTP-Implementierung akzeptiert ein Zeitfenster von ±30 Sekunden.
+  gehasht. Komplexität wird zentral erzwungen und die letzten 20 Hashes je Konto
+  verhindern Wiederverwendung. Die TOTP-Implementierung akzeptiert ein Zeitfenster
+  von ±30 Sekunden.
+* **API-Authentisierung:** persönliche API-Keys werden nur einmal ausgegeben und
+  danach ausschließlich als mit dem Master-Secret gebildeter HMAC gespeichert.
+  Sie übernehmen Rolle und Zuweisungen des Kontos und besitzen zusätzlich einen
+  `read`- oder `read_write`-Scope. Widerruf und letzte Nutzung werden gespeichert.
 * **ACME:** Aufträge erlauben HTTP-01 oder DNS-01. Die Provider-Grenze trennt
   die Protokollsteuerung von DNS-Zugangsdaten. Ein lokaler JSON-Hook ermöglicht
   beliebige Anbieter ohne deren SDK-Abhängigkeiten.
@@ -44,7 +50,7 @@ regelmäßig signierte Prüfpunkte an ein unabhängiges WORM-Ziel oder Remote-SI
 
 ## Secrets
 
-Die Datenbank darf keine Klartext-Passwörter enthalten. API-Tokens, TOTP-Secrets
+Die Datenbank darf keine Klartext-Passwörter oder API-Keys enthalten. TOTP-Secrets
 und verwaltete private Schlüssel benötigen vor einem Produktiveinsatz eine
 Envelope-Verschlüsselung über einen austauschbaren Key-Provider (zum Beispiel
 PKCS#11 oder systemd Credentials). API-Antworten und Logs dürfen Secrets nie

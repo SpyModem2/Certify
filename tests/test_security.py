@@ -5,13 +5,21 @@ from certify.security import (
     verify_password,
     verify_token,
     verify_totp,
+    validate_password,
 )
+import pytest
 
 
 def test_password_round_trip() -> None:
-    encoded = hash_password("correct horse battery staple")
-    assert verify_password("correct horse battery staple", encoded)
+    encoded = hash_password("Correct horse battery staple!7")
+    assert verify_password("Correct horse battery staple!7", encoded)
     assert not verify_password("incorrect password", encoded)
+
+
+@pytest.mark.parametrize("password", ["short", "alllowercasebutlong1!", "ALLUPPERCASEBUTLONG1!", "NoNumberButLong!!", "NoSpecialButLong123"])
+def test_password_policy_rejects_missing_complexity(password: str) -> None:
+    with pytest.raises(ValueError, match="uppercase letter"):
+        validate_password(password)
 
 
 def test_rfc6238_totp_vector() -> None:

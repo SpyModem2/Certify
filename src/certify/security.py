@@ -9,10 +9,29 @@ import struct
 import time
 from typing import Any
 
+PASSWORD_MIN_LENGTH = 14
+PASSWORD_POLICY = (
+    "Password must be at least 14 characters long and contain an uppercase letter, "
+    "a lowercase letter, a number, and a special character. The last 20 passwords "
+    "cannot be reused."
+)
+
+
+def validate_password(password: str) -> None:
+    """Raise a user-facing error when a password does not meet the policy."""
+    checks = (
+        len(password) >= PASSWORD_MIN_LENGTH,
+        any(character.isupper() for character in password),
+        any(character.islower() for character in password),
+        any(character.isdigit() for character in password),
+        any(not character.isalnum() for character in password),
+    )
+    if not all(checks):
+        raise ValueError(PASSWORD_POLICY)
+
 
 def hash_password(password: str, salt: bytes | None = None) -> str:
-    if len(password) < 12:
-        raise ValueError("password must contain at least 12 characters")
+    validate_password(password)
     salt = salt or secrets.token_bytes(16)
     digest = hashlib.scrypt(
         password.encode(), salt=salt, n=2**14, r=8, p=1, dklen=32
