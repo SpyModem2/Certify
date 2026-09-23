@@ -88,37 +88,164 @@ Sicherheitsgründen können API-Keys keine weiteren Keys erzeugen.
 | `CERTIFY_SMTP_HOST` / `CERTIFY_SMTP_PORT` | lokaler SMTP-Relay | `localhost` / `25` |
 | `CERTIFY_MAIL_FROM` | Absenderadresse | `certify@localhost` |
 
-## HTTPS-Zertifikate
+## Installation auf RHEL 10
 
-Die Online- und Offline-Installation richtet mindestens ein Self-Signed-
-Zertifikat ein und startet Certify direkt mit TLS auf Port 443. Im Dialog kann
-alternativ ein vorhandenes PEM-Zertifikat samt privatem Schlüssel und optionaler
-Zertifikatskette importiert oder über Let's Encrypt/certbot ein öffentlich
-vertrauenswürdiges Zertifikat bezogen werden. Für Let's Encrypt müssen Port 80
-von außen erreichbar und `certbot` als RHEL-Paket installiert sein. Ein Deploy-
-Hook übernimmt erneuerte Zertifikate automatisch und startet den Dienst neu.
+Die Installationsskripte sind für eine direkte systemd-Installation auf RHEL 10
+vorgesehen; Container werden weder benötigt noch unterstützt. Online- und
+Offline-Installation erzeugen dieselbe Verzeichnisstruktur und verwenden
+denselben Konfigurationsdialog.
 
-Die Auswahl ist auch ohne Dialog möglich:
+### Voraussetzungen und Installationsvarianten
+
+Auf dem **Zielserver** werden Root-Rechte und der RHEL-Paketmanager `dnf`
+benötigt. Python 3.12, `pip`, OpenSSL und alle weiteren Laufzeitwerkzeuge
+installiert das Skript selbst. Abhängig von der gewählten Konfiguration kommen
+folgende Voraussetzungen hinzu:
+
+- **Online:** Der Zielserver kann die Python-Abhängigkeiten aus dem Internet
+  laden. Certify selbst wird immer aus dem lokalen Projektverzeichnis installiert.
+- **Offline:** Ein separates Build-System mit Internetzugang, Python und `pip`
+  erstellt vorab alle Wheels. Es sollte dieselbe RHEL-Version, CPU-Architektur
+  und Python-Version wie der Zielserver verwenden, damit binäre Wheels
+  kompatibel sind.
+- **Let's Encrypt:** Der öffentliche DNS-Name zeigt auf den Zielserver, TCP-Port
+  80 ist aus dem Internet erreichbar. Die Installation installiert `certbot`
+  bei Bedarf; Certbot verwendet den Standalone-HTTP-01-Authenticator.
+- **RHEL-Paketquellen:** `dnf` muss auf dem Zielserver auf erreichbare oder lokal
+  eingebundene Paketquellen zugreifen können. Das gilt auch bei der
+  Offline-Installation, wenn erforderliche RPM-Pakete noch fehlen.
+
+### Online-Installation
+
+Repository beziehungsweise Release-Artefakt auf den Zielserver kopieren und im
+Projektverzeichnis ausführen:
 
 ```bash
-# Standard: Self-Signed
-CERTIFY_NON_INTERACTIVE=true CERTIFY_TLS_MODE=self-signed \
-  CERTIFY_TLS_HOSTNAME=certify.intern ./packaging/install-offline.sh
-
-# Vorhandenes Zertifikat (CHAIN ist optional)
-CERTIFY_NON_INTERACTIVE=true CERTIFY_TLS_MODE=custom \
-  CERTIFY_TLS_CERT_FILE=/root/server.pem CERTIFY_TLS_KEY_FILE=/root/server.key \
-  CERTIFY_TLS_CHAIN_FILE=/root/chain.pem ./packaging/install-offline.sh
-
-# Let's Encrypt
-CERTIFY_NON_INTERACTIVE=true CERTIFY_TLS_MODE=letsencrypt \
-  CERTIFY_TLS_DOMAIN=certify.example.com CERTIFY_TLS_EMAIL=admin@example.com \
-  ./packaging/install-online.sh
+sudo ./packaging/install-online.sh
 ```
 
-Nach der Installation kann die Quelle jederzeit gewechselt werden. Das Werkzeug
-prüft Ablauf und Übereinstimmung von Zertifikat und Schlüssel, installiert den
-privaten Schlüssel mit restriktiven Rechten und lädt den Dienst neu:
+Das Skript installiert Certify direkt aus dem vorliegenden Projektverzeichnis
+in eine eigene virtuelle Umgebung. Aus dem Internet werden ausschließlich die
+Python-Abhängigkeiten geladen.
+
+### Offline-Installation
+
+1. Auf einem kompatiblen **Build-System mit Internetzugang** das Wheelhouse
+   erstellen:
+
+   ```bash
+   ./packaging/build-wheelhouse.sh
+   ```
+
+2. Das **gesamte Projektverzeichnis** einschließlich der neu erzeugten
+   Verzeichnisse `dist/` und `wheelhouse/` auf den Zielserver übertragen. Die
+   Datei `dist/SHA256SUMS` enthält die beim Build erzeugten Prüfsummen der
+   Projekt- und Abhängigkeits-Wheels.
+
+3. Auf dem Zielserver aus dem Projektverzeichnis installieren. Für die
+   Anwendung und ihre Python-Abhängigkeiten ist hierbei kein Netzzugriff
+   erforderlich; fehlende RHEL-Pakete bezieht `dnf` aus den konfigurierten
+   Online- oder Offline-Paketquellen:
+
+   ```bash
+   sudo ./packaging/install-offline.sh
+   ```
+
+### Ablauf der interaktiven Installation
+
+Beide Installationsvarianten führen durch dieselben Schritte:
+
+1. Alle benötigten RHEL-Pakete installieren und deren Werkzeuge prüfen. Dazu
+   gehören Python samt `pip`, OpenSSL, CA-Zertifikate, systemd sowie die für
+   Benutzer-, Datei- und SELinux-Verwaltung benötigten Werkzeuge. `certbot` wird
+   bei Auswahl von Let's Encrypt zusätzlich installiert.
+2. Systembenutzer `certify`, Datenverzeichnis und Python-Umgebung anlegen.
+3. Browser-DNS-Namen, Sitzungsdauer und SMTP-Einstellungen abfragen und ein
+   zufälliges Systemgeheimnis erzeugen.
+4. Eine TLS-Quelle wählen: Self-Signed, vorhandene PEM-Dateien oder Let's
+   Encrypt. Self-Signed ist der Standard und ohne weitere Infrastruktur sofort
+   nutzbar, verursacht im Browser aber eine Zertifikatswarnung.
+5. Das erste Administratorkonto interaktiv anlegen. Das Kennwort wird verdeckt
+   abgefragt und muss die oben beschriebene Kennwortrichtlinie erfüllen.
+6. Optional den Dienst sofort aktivieren und starten.
+
+Eine laufende `firewalld` wird dauerhaft und sofort für HTTPS freigeschaltet.
+Bei Let's Encrypt wird zusätzlich HTTP für Ausstellung und Erneuerung geöffnet.
+Bei aktivem SELinux stellt das Skript die vorgesehenen Dateikontexte wieder her.
+
+Die Installation legt insbesondere folgende Pfade an:
+
+| Pfad | Inhalt |
+|---|---|
+| `/opt/certify/venv` | Anwendung und Python-Abhängigkeiten |
+| `/etc/certify/certify.conf` | Laufzeitkonfiguration und Systemgeheimnis |
+| `/etc/certify/tls/` | aktives Zertifikat und privater Schlüssel |
+| `/var/lib/certify` | Datenbank und persistente Anwendungsdaten |
+| `/etc/systemd/system/certify.service` | systemd-Unit |
+| `/usr/local/sbin/certify-configure-tls` | Werkzeug zum Wechseln des TLS-Zertifikats |
+
+### Unbeaufsichtigte Installation
+
+Mit `CERTIFY_NON_INTERACTIVE=true` entfallen alle Rückfragen. Die
+Laufzeitkonfiguration wird aus den Variablen der Tabelle im Abschnitt
+[Konfiguration](#konfiguration) erstellt; ein nicht gesetztes `CERTIFY_SECRET`
+wird dabei sicher generiert. Anders als im Dialog legt das Skript jedoch **kein
+Administratorkonto an und startet den Dienst nicht**.
+
+Installationsspezifische Variablen:
+
+| Variable | Werte / Bedeutung | Vorgabe |
+|---|---|---|
+| `CERTIFY_TLS_MODE` | `self-signed`, `custom` oder `letsencrypt` | `self-signed` |
+| `CERTIFY_TLS_HOSTNAME` | DNS-Name oder IP für Self-Signed-Zertifikat | erster Trusted Host beziehungsweise Hostname |
+| `CERTIFY_TLS_CERT_FILE` | lesbares PEM-Serverzertifikat bei `custom` | erforderlich |
+| `CERTIFY_TLS_KEY_FILE` | passender lesbarer PEM-Private-Key bei `custom` | erforderlich |
+| `CERTIFY_TLS_CHAIN_FILE` | optionale PEM-Zertifikatskette bei `custom` | leer |
+| `CERTIFY_TLS_DOMAIN` | öffentlicher DNS-Name bei `letsencrypt` | erforderlich |
+| `CERTIFY_TLS_EMAIL` | Let's-Encrypt-Kontaktadresse; `-` verzichtet auf E-Mail | erforderlich |
+
+Beispiel für eine vollständige Offline-Installation mit Self-Signed-
+Zertifikat:
+
+```bash
+sudo env \
+  CERTIFY_NON_INTERACTIVE=true \
+  CERTIFY_TLS_MODE=self-signed \
+  CERTIFY_TLS_HOSTNAME=certify.intern \
+  CERTIFY_TRUSTED_HOSTS=certify.intern \
+  CERTIFY_SMTP_HOST=mail.intern \
+  CERTIFY_MAIL_FROM=certify@intern \
+  ./packaging/install-offline.sh
+
+# Anschließend einmalig den Administrator anlegen und den Dienst starten:
+sudo bash -c 'set -a; source /etc/certify/certify.conf; \
+  runuser -u certify -- /opt/certify/venv/bin/certify init-admin admin'
+sudo systemctl enable --now certify
+```
+
+Für ein eigenes Zertifikat werden stattdessen `CERTIFY_TLS_MODE=custom`,
+`CERTIFY_TLS_CERT_FILE` und `CERTIFY_TLS_KEY_FILE` gesetzt; für Let's Encrypt
+`CERTIFY_TLS_MODE=letsencrypt`, `CERTIFY_TLS_DOMAIN` und `CERTIFY_TLS_EMAIL`.
+
+### Installation prüfen
+
+```bash
+sudo systemctl status certify --no-pager
+curl --cacert /etc/certify/tls/fullchain.pem https://certify.intern/
+sudo journalctl -u certify -n 50 --no-pager
+```
+
+Beim eigenen oder einem Let's-Encrypt-Zertifikat kann `curl` ohne `--cacert`
+verwendet werden, sofern die ausstellende CA auf dem System als vertrauenswürdig
+gilt. Der aufgerufene Hostname muss in `CERTIFY_TRUSTED_HOSTS` und im Zertifikat
+enthalten sein.
+
+### HTTPS-Zertifikat nachträglich wechseln
+
+Der Dienst verwendet nach seinem Start Port 443. Die Installation richtet
+mindestens ein Self-Signed-Zertifikat ein. Das TLS-Werkzeug prüft Ablauf und
+Übereinstimmung von Zertifikat und Schlüssel, installiert den privaten Schlüssel mit
+restriktiven Rechten und startet einen bereits laufenden Dienst neu:
 
 ```bash
 sudo certify-configure-tls self-signed certify.intern
@@ -126,52 +253,14 @@ sudo certify-configure-tls custom server.pem server.key chain.pem
 sudo certify-configure-tls letsencrypt certify.example.com admin@example.com
 ```
 
-Ohne explizites `CERTIFY_SECRET` startet der Server nicht. Geheimnisse gehören
-in eine root-lesbare Environment-Datei, nicht in die Kommandozeile oder ins
-Repository.
+Bei Let's Encrypt installiert es außerdem einen Deploy-Hook, der erneuerte
+Zertifikate für Certify übernimmt. Port 80 muss daher auch für spätere
+Erneuerungen erreichbar bleiben.
 
-## Offline-Installation
-
-Auf einem verbundenen Build-System:
-
-```bash
-./packaging/build-wheelhouse.sh
-```
-
-Das erzeugte Projektverzeichnis samt `dist/` und `wheelhouse/` auf den
-Zielserver übertragen und dort als `root` ausführen:
-
-```bash
-./packaging/install-offline.sh
-```
-
-Das Installationsprogramm führt anschließend Schritt für Schritt durch die
-Konfiguration. Es erklärt jede benötigte Angabe (Browser-DNS-Namen,
-Sitzungsdauer, Mailserver und Administratorkonto), erzeugt das Systemgeheimnis
-automatisch und kann den Dienst direkt starten. Eine laufende `firewalld` wird
-dauerhaft und sofort für HTTPS freigeschaltet; bei Let's Encrypt wird zusätzlich
-HTTP für die initiale Ausstellung und spätere Erneuerungen geöffnet. Bei aktivem
-SELinux stellt das Skript außerdem mit `restorecon` die von RHEL vorgesehenen
-Dateikontexte für Konfiguration, Programm und Zustandsdaten wieder her. Fehlt
-`restorecon` bei aktivem SELinux, fragt die interaktive Installation, ob das
-benötigte RHEL-Paket `policycoreutils` direkt mit `dnf` installiert werden soll.
-Für automatisierte Installationen steuert
-`CERTIFY_INSTALL_MISSING_PACKAGES=true` beziehungsweise `false`, ob fehlende
-Pflichtpakete ohne Rückfrage installiert werden; ohne diese Angabe schlägt eine
-nicht-interaktive Installation bei einem fehlenden Pflichtpaket sicher fehl.
-`CERTIFY_NON_INTERACTIVE=true` kann außerdem zusammen mit den in der Tabelle
-genannten `CERTIFY_*`-Variablen gesetzt werden.
-
-Container werden weder benötigt noch unterstützt.
-
-## Online-Installation
-
-Wenn der Zielserver PyPI erreichen kann, installiert das Online-Skript die über
-`CERTIFY_VERSION` auswählbare veröffentlichte Version samt Abhängigkeiten:
-
-```bash
-sudo CERTIFY_VERSION=0.1.0 ./packaging/install-online.sh
-```
+Das Systemgeheimnis in `/etc/certify/certify.conf` darf nach der ersten
+Inbetriebnahme nicht unbedacht geändert werden: Es schützt unter anderem
+Sitzungen und Audit-HMACs. Geheimnisse gehören nicht in die Kommandozeile oder
+ins Repository.
 
 ## Zertifikate mehreren Systemen zuweisen
 
