@@ -54,6 +54,8 @@ def main() -> int:
     serve = commands.add_parser("serve", help="run the web service")
     serve.add_argument("--host", default="127.0.0.1")
     serve.add_argument("--port", default=8080, type=int)
+    serve.add_argument("--ssl-certfile", help="PEM certificate chain for HTTPS")
+    serve.add_argument("--ssl-keyfile", help="PEM private key for HTTPS")
     arguments = parser.parse_args()
     if arguments.command == "init-admin":
         return init_admin(arguments.username)
@@ -67,6 +69,8 @@ def main() -> int:
             host=arguments.host,
             port=arguments.port,
             proxy_headers=False,
+            ssl_certfile=arguments.ssl_certfile,
+            ssl_keyfile=arguments.ssl_keyfile,
             log_level="debug" if settings.debug else "info",
         )
         return 0
