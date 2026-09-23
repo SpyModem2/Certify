@@ -6,3 +6,7 @@ CERTIFY_DEBUG=false
 CERTIFY_SMTP_HOST=localhost
 CERTIFY_SMTP_PORT=25
 CERTIFY_MAIL_FROM=certify@localhost
+
+# Nur waehrend der Installation ausgewertet: self-signed, custom oder letsencrypt.
+CERTIFY_TLS_MODE=self-signed
+CERTIFY_TLS_HOSTNAME=certify.example.internal

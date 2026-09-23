@@ -94,9 +94,61 @@ EOF
   echo "Konfiguration gespeichert: ${config_file}"
 }
 
+configure_tls() {
+  local root="$1" mode host cert key chain domain email
+  install -m 0750 "$root/packaging/configure-tls.sh" /usr/local/sbin/certify-configure-tls
+
+  if [[ "${CERTIFY_NON_INTERACTIVE:-false}" == "true" || ! -t 0 ]]; then
+    mode="${CERTIFY_TLS_MODE:-self-signed}"
+  else
+    echo
+    echo "=== HTTPS/TLS einrichten ==="
+    echo "1: Self-Signed (sofort nutzbar), 2: eigenes Zertifikat, 3: Let's Encrypt"
+    ask mode "Welche TLS-Quelle soll verwendet werden?" "1"
+    case "$mode" in 1) mode=self-signed;; 2) mode=custom;; 3) mode=letsencrypt;; esac
+  fi
+
+  case "$mode" in
+    self-signed)
+      host="${CERTIFY_TLS_HOSTNAME:-${CERTIFY_TRUSTED_HOSTS:-}}"
+      host="${host%%,*}"
+      if [[ -z "$host" ]]; then
+        host="$(sed -n 's/^CERTIFY_TRUSTED_HOSTS=//p' /etc/certify/certify.conf | cut -d, -f1)"
+      fi
+      host="${host:-$(hostname -f 2>/dev/null || hostname)}"
+      if [[ "${CERTIFY_NON_INTERACTIVE:-false}" != "true" && -t 0 ]]; then
+        ask_config_value host "Fuer welchen DNS-Namen/IP soll das Self-Signed-Zertifikat gelten?" "$host"
+      fi
+      /usr/local/sbin/certify-configure-tls self-signed "$host"
+      ;;
+    custom)
+      cert="${CERTIFY_TLS_CERT_FILE:-}"; key="${CERTIFY_TLS_KEY_FILE:-}"; chain="${CERTIFY_TLS_CHAIN_FILE:-}"
+      if [[ "${CERTIFY_NON_INTERACTIVE:-false}" != "true" && -t 0 ]]; then
+        ask cert "Pfad zum PEM-Serverzertifikat:" "$cert"
+        ask key "Pfad zum PEM-Private-Key:" "$key"
+        ask chain "Pfad zur PEM-Zertifikatskette (optional):" "$chain"
+      fi
+      [[ -n "$cert" && -n "$key" ]] || { echo "CERTIFY_TLS_CERT_FILE und CERTIFY_TLS_KEY_FILE sind erforderlich." >&2; return 1; }
+      if [[ -n "$chain" ]]; then /usr/local/sbin/certify-configure-tls custom "$cert" "$key" "$chain"; else /usr/local/sbin/certify-configure-tls custom "$cert" "$key"; fi
+      ;;
+    letsencrypt)
+      domain="${CERTIFY_TLS_DOMAIN:-}"; email="${CERTIFY_TLS_EMAIL:-}"
+      if [[ "${CERTIFY_NON_INTERACTIVE:-false}" != "true" && -t 0 ]]; then
+        ask_config_value domain "Oeffentlich erreichbarer DNS-Name fuer Let's Encrypt:" "$domain"
+        ask_config_value email "E-Mail-Adresse fuer Ablauf- und Kontohinweise (oder -):" "$email"
+      fi
+      [[ -n "$domain" && -n "$email" ]] || { echo "CERTIFY_TLS_DOMAIN und CERTIFY_TLS_EMAIL sind erforderlich." >&2; return 1; }
+      command -v certbot >/dev/null || { echo "certbot fehlt. Bitte zuerst das RHEL-Paket certbot installieren." >&2; return 1; }
+      /usr/local/sbin/certify-configure-tls letsencrypt "$domain" "$email"
+      ;;
+    *) echo "Unbekannter CERTIFY_TLS_MODE: $mode" >&2; return 1 ;;
+  esac
+}
+
 finish_install() {
   local root="$1"
   configure_certify
+  configure_tls "$root"
   install -m 0644 "$root/packaging/certify.service" /etc/systemd/system/certify.service
   systemctl daemon-reload
 
@@ -112,7 +164,7 @@ finish_install() {
       /opt/certify/venv/bin/certify init-admin "$admin_name"
     if ask_yes_no "Soll Certify jetzt gestartet und bei jedem Systemstart aktiviert werden?" "ja"; then
       systemctl enable --now certify
-      echo "Certify wurde gestartet."
+      echo "Certify wurde gestartet. HTTPS ist auf Port 443 erreichbar."
     else
       echo "Spaeter starten mit: systemctl enable --now certify"
     fi

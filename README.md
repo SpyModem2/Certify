@@ -47,6 +47,8 @@ certify serve --host 127.0.0.1 --port 8080
 Beim Anlegen des Administrators wird das initiale Passwort interaktiv
 abgefragt. Das Webfrontend ist anschließend unter `http://127.0.0.1:8080/`
 erreichbar; die API-Dokumentation liegt unter `http://127.0.0.1:8080/docs`.
+Dieser HTTP-Aufruf ist nur fuer die lokale Entwicklung gedacht; die
+Systeminstallation aktiviert immer HTTPS.
 
 ## Webfrontend
 
@@ -85,6 +87,44 @@ Sicherheitsgründen können API-Keys keine weiteren Keys erzeugen.
 | `CERTIFY_DEBUG` | Entwicklungsmodus | `false` |
 | `CERTIFY_SMTP_HOST` / `CERTIFY_SMTP_PORT` | lokaler SMTP-Relay | `localhost` / `25` |
 | `CERTIFY_MAIL_FROM` | Absenderadresse | `certify@localhost` |
+
+## HTTPS-Zertifikate
+
+Die Online- und Offline-Installation richtet mindestens ein Self-Signed-
+Zertifikat ein und startet Certify direkt mit TLS auf Port 443. Im Dialog kann
+alternativ ein vorhandenes PEM-Zertifikat samt privatem Schlüssel und optionaler
+Zertifikatskette importiert oder über Let's Encrypt/certbot ein öffentlich
+vertrauenswürdiges Zertifikat bezogen werden. Für Let's Encrypt müssen Port 80
+von außen erreichbar und `certbot` als RHEL-Paket installiert sein. Ein Deploy-
+Hook übernimmt erneuerte Zertifikate automatisch und startet den Dienst neu.
+
+Die Auswahl ist auch ohne Dialog möglich:
+
+```bash
+# Standard: Self-Signed
+CERTIFY_NON_INTERACTIVE=true CERTIFY_TLS_MODE=self-signed \
+  CERTIFY_TLS_HOSTNAME=certify.intern ./packaging/install-offline.sh
+
+# Vorhandenes Zertifikat (CHAIN ist optional)
+CERTIFY_NON_INTERACTIVE=true CERTIFY_TLS_MODE=custom \
+  CERTIFY_TLS_CERT_FILE=/root/server.pem CERTIFY_TLS_KEY_FILE=/root/server.key \
+  CERTIFY_TLS_CHAIN_FILE=/root/chain.pem ./packaging/install-offline.sh
+
+# Let's Encrypt
+CERTIFY_NON_INTERACTIVE=true CERTIFY_TLS_MODE=letsencrypt \
+  CERTIFY_TLS_DOMAIN=certify.example.com CERTIFY_TLS_EMAIL=admin@example.com \
+  ./packaging/install-online.sh
+```
+
+Nach der Installation kann die Quelle jederzeit gewechselt werden. Das Werkzeug
+prüft Ablauf und Übereinstimmung von Zertifikat und Schlüssel, installiert den
+privaten Schlüssel mit restriktiven Rechten und lädt den Dienst neu:
+
+```bash
+sudo certify-configure-tls self-signed certify.intern
+sudo certify-configure-tls custom server.pem server.key chain.pem
+sudo certify-configure-tls letsencrypt certify.example.com admin@example.com
+```
 
 Ohne explizites `CERTIFY_SECRET` startet der Server nicht. Geheimnisse gehören
 in eine root-lesbare Environment-Datei, nicht in die Kommandozeile oder ins
