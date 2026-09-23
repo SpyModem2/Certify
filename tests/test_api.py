@@ -45,7 +45,50 @@ def test_login_and_certificate_request(tmp_path: Path) -> None:
 def test_health_and_localized_page(tmp_path: Path) -> None:
     with app_client(tmp_path) as client:
         assert client.get("/health").json() == {"status": "ok"}
-        assert "Zertifikatsverwaltung" in client.get("/", headers={"Accept-Language": "de"}).text
+        page = client.get("/", headers={"Accept-Language": "de"})
+        assert "Zertifikatsverwaltung" in page.text
+        assert "default-src 'self'" in page.headers["content-security-policy"]
+        assert client.get("/assets/app.css").status_code == 200
+        assert client.get("/assets/app.js").status_code == 200
+
+
+def test_frontend_supporting_inventory_endpoints(tmp_path: Path) -> None:
+    with app_client(tmp_path) as client:
+        login = client.post(
+            "/api/v1/auth/login",
+            json={"username": "admin", "password": "Correct horse battery staple!7"},
+        )
+        headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+
+        me = client.get("/api/v1/users/me", headers=headers)
+        assert me.status_code == 200
+        assert me.json()["username"] == "admin"
+        assert me.json()["notify_level"] == "errors"
+
+        users = client.get("/api/v1/users", headers=headers)
+        assert users.status_code == 200
+        assert users.json()[0]["role"] == "admin"
+
+        created = client.post(
+            "/api/v1/targets",
+            headers=headers,
+            json={
+                "name": "frontend-target",
+                "adapter": "linux-ssh",
+                "hostname": "web.example.test",
+                "config": {"path": "/etc/pki"},
+                "credentials": {"username": "deploy"},
+            },
+        )
+        assert created.status_code == 201
+        targets = client.get("/api/v1/targets", headers=headers)
+        assert targets.json()[0]["config"] == {"path": "/etc/pki"}
+        assert "credentials" not in targets.json()[0]
+
+        entries = client.get("/api/v1/audit", headers=headers)
+        assert entries.status_code == 200
+        assert entries.json()[0]["action"] == "target.create"
+        assert isinstance(entries.json()[0]["details"], dict)
 
 
 def test_certificate_can_be_assigned_to_multiple_targets(tmp_path: Path) -> None:

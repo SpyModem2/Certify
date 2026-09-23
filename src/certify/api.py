@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import hashlib
 import hmac
 import json
@@ -7,6 +5,7 @@ import secrets
 import time
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Annotated, Literal
 
 from cryptography import x509
@@ -15,6 +14,8 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response, status
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 
 from .audit import AuditLog
@@ -125,6 +126,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.audit = audit
     app.state.settings = settings
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=list(settings.trusted_hosts))
+    web_dir = Path(__file__).with_name("web")
+    app.mount("/assets", StaticFiles(directory=web_dir / "assets"), name="assets")
 
     def principal(request: Request, authorization: Annotated[str | None, Header()] = None) -> Principal:
         if not authorization or not authorization.startswith("Bearer "):
@@ -169,12 +172,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def health() -> dict[str, str]:
         return {"status": "ok"}
 
-    @app.get("/", response_class=Response)
-    def index(request: Request) -> Response:
-        language = request.headers.get("accept-language", "en").lower()
-        title = "Zertifikatsverwaltung" if language.startswith("de") else "Certificate management"
-        body = f"""<!doctype html><html lang=\"{'de' if language.startswith('de') else 'en'}\"><meta charset=\"utf-8\"><title>Certify</title><style>body{{font:16px system-ui;max-width:60rem;margin:4rem auto;padding:0 1rem}}code{{background:#eee;padding:.2rem}}</style><h1>Certify</h1><p>{title}</p><p>API: <a href=\"/docs\"><code>/docs</code></a></p></html>"""
-        return Response(body, media_type="text/html", headers={"Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'"})
+    @app.get("/", response_class=FileResponse)
+    def index() -> FileResponse:
+        return FileResponse(
+            web_dir / "index.html",
+            headers={
+                "Content-Security-Policy": "default-src 'self'; script-src 'self'; style-src 'self'; "
+                "img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
+                "Cache-Control": "no-store",
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
 
     @app.post("/api/v1/auth/login")
     def login(body: LoginRequest, request: Request) -> dict[str, str]:
@@ -189,6 +197,25 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         token = sign_token({"sub": row["id"], "username": row["username"], "role": row["role"], "exp": int(expires.timestamp()), "nonce": time.time_ns()}, settings.secret)
         audit.append(row["username"], "auth.login", "session")
         return {"access_token": token, "token_type": "bearer", "expires_at": expires.isoformat()}
+
+    @app.get("/api/v1/users/me")
+    def current_user(actor: Annotated[Principal, Depends(principal)]) -> dict[str, object]:
+        with database.connect() as connection:
+            row = connection.execute(
+                "SELECT id,username,role,email,notify_level,created_at FROM users WHERE id=?",
+                (actor.id,),
+            ).fetchone()
+        if not row:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "user not found")
+        return dict(row)
+
+    @app.get("/api/v1/users")
+    def list_users(_: Annotated[Principal, Depends(roles("admin"))]) -> list[dict[str, object]]:
+        with database.connect() as connection:
+            rows = connection.execute(
+                "SELECT id,username,role,email,notify_level,active,created_at FROM users ORDER BY username"
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     @app.post("/api/v1/users", status_code=201)
     def create_user(body: UserCreate, actor: Annotated[Principal, Depends(roles("admin"))]) -> dict[str, object]:
@@ -339,6 +366,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         audit.append(actor.username, "target.create", f"target:{cursor.lastrowid}", {"name": body.name, "adapter": body.adapter})
         return {"id": cursor.lastrowid, "name": body.name, "adapter": body.adapter}
 
+    @app.get("/api/v1/targets")
+    def list_targets(_: Annotated[Principal, Depends(roles("admin", "operator"))]) -> list[dict[str, object]]:
+        with database.connect() as connection:
+            rows = connection.execute(
+                "SELECT id,name,adapter,hostname,ip_address,config,enabled,created_at FROM targets ORDER BY name"
+            ).fetchall()
+        return [
+            {**dict(row), "config": json.loads(row["config"])}
+            for row in rows
+        ]
+
     def require_certificate_access(certificate_id: int, actor: Principal) -> None:
         if actor.role == "admin":
             return
@@ -456,5 +494,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def verify_audit(_: Annotated[Principal, Depends(roles("admin", "auditor"))]) -> dict[str, object]:
         valid, broken_at = audit.verify()
         return {"valid": valid, "broken_at": broken_at}
+
+    @app.get("/api/v1/audit")
+    def audit_entries(
+        _: Annotated[Principal, Depends(roles("admin", "auditor"))],
+        limit: int = 100,
+    ) -> list[dict[str, object]]:
+        limit = max(1, min(limit, 500))
+        with database.connect() as connection:
+            rows = connection.execute(
+                "SELECT sequence,occurred_at,actor,action,resource,details FROM audit_log "
+                "ORDER BY sequence DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [{**dict(row), "details": json.loads(row["details"])} for row in rows]
 
     return app

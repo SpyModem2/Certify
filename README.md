@@ -45,7 +45,18 @@ certify serve --host 127.0.0.1 --port 8080
 ```
 
 Beim Anlegen des Administrators wird das initiale Passwort interaktiv
-abgefragt. API-Dokumentation: `http://127.0.0.1:8080/docs`.
+abgefragt. Das Webfrontend ist anschließend unter `http://127.0.0.1:8080/`
+erreichbar; die API-Dokumentation liegt unter `http://127.0.0.1:8080/docs`.
+
+## Webfrontend
+
+Die responsive Weboberfläche bildet die vorhandenen Arbeitsabläufe
+rollenabhängig ab: Dashboard, Zertifikate und CSR-/Schlüsselaktionen,
+Zielsysteme, Benutzer, persönliche API-Keys, Benachrichtigungen,
+Audit-Verifikation und Kontosicherheit. Sie wird ohne externes CDN direkt vom
+Certify-Dienst ausgeliefert und benötigt keinen separaten Frontend-Build. Neue
+Funktionsbereiche können über die zentrale Seitenregistrierung in
+`src/certify/web/assets/app.js` ergänzt werden.
 
 ## Kennwort- und API-Key-Sicherheit
 
