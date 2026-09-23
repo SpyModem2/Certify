@@ -16,14 +16,14 @@ def app_client(tmp_path: Path) -> TestClient:
     with database.connect() as connection:
         connection.execute(
             "INSERT INTO users(username,password_hash,role) VALUES(?,?,?)",
-            ("admin", hash_password("correct horse battery staple"), "admin"),
+            ("admin", hash_password("Correct horse battery staple!7"), "admin"),
         )
     return TestClient(app)
 
 
 def test_login_and_certificate_request(tmp_path: Path) -> None:
     with app_client(tmp_path) as client:
-        response = client.post("/api/v1/auth/login", json={"username": "admin", "password": "correct horse battery staple"})
+        response = client.post("/api/v1/auth/login", json={"username": "admin", "password": "Correct horse battery staple!7"})
         assert response.status_code == 200
         headers = {"Authorization": f"Bearer {response.json()['access_token']}"}
         response = client.post(
@@ -52,7 +52,7 @@ def test_certificate_can_be_assigned_to_multiple_targets(tmp_path: Path) -> None
     with app_client(tmp_path) as client:
         login = client.post(
             "/api/v1/auth/login",
-            json={"username": "admin", "password": "correct horse battery staple"},
+            json={"username": "admin", "password": "Correct horse battery staple!7"},
         )
         headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
         target_ids = []
@@ -93,7 +93,7 @@ def test_certificate_rejects_unknown_target(tmp_path: Path) -> None:
     with app_client(tmp_path) as client:
         login = client.post(
             "/api/v1/auth/login",
-            json={"username": "admin", "password": "correct horse battery staple"},
+            json={"username": "admin", "password": "Correct horse battery staple!7"},
         )
         headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
         response = client.post(
@@ -107,3 +107,29 @@ def test_certificate_rejects_unknown_target(tmp_path: Path) -> None:
             },
         )
         assert response.status_code == 422
+
+
+def test_password_change_enforces_history(tmp_path: Path) -> None:
+    with app_client(tmp_path) as client:
+        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "Correct horse battery staple!7"})
+        headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+        changed = client.put("/api/v1/users/me/password", headers=headers, json={"current_password": "Correct horse battery staple!7", "new_password": "An even better Password!8"})
+        assert changed.status_code == 204
+        reused = client.put("/api/v1/users/me/password", headers=headers, json={"current_password": "An even better Password!8", "new_password": "Correct horse battery staple!7"})
+        assert reused.status_code == 422
+        assert "last 20" in reused.json()["detail"]
+
+
+def test_api_key_inherits_role_and_can_be_read_only(tmp_path: Path) -> None:
+    with app_client(tmp_path) as client:
+        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "Correct horse battery staple!7"})
+        session_headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+        created = client.post("/api/v1/api-keys", headers=session_headers, json={"name": "reporting", "scope": "read"})
+        assert created.status_code == 201
+        api_headers = {"Authorization": f"Bearer {created.json()['key']}"}
+        assert client.get("/api/v1/certificates", headers=api_headers).status_code == 200
+        denied = client.post("/api/v1/targets", headers=api_headers, json={"name": "blocked", "adapter": "linux-ssh"})
+        assert denied.status_code == 403
+        key_id = created.json()["id"]
+        assert client.delete(f"/api/v1/api-keys/{key_id}", headers=session_headers).status_code == 204
+        assert client.get("/api/v1/certificates", headers=api_headers).status_code == 401

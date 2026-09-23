@@ -15,6 +15,19 @@ CREATE TABLE IF NOT EXISTS users (
  CHECK(notify_level IN ('none','errors','expiry','all')), active INTEGER NOT NULL DEFAULT 1,
  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+CREATE TABLE IF NOT EXISTS password_history (
+ id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+ password_hash TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_password_history_user ON password_history(user_id,id DESC);
+CREATE TABLE IF NOT EXISTS api_keys (
+ id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+ name TEXT NOT NULL, key_hash TEXT NOT NULL UNIQUE,
+ scope TEXT NOT NULL CHECK(scope IN ('read','read_write')),
+ created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, last_used_at TEXT, revoked_at TEXT,
+ UNIQUE(user_id,name)
+);
+CREATE INDEX IF NOT EXISTS idx_api_keys_user ON api_keys(user_id);
 CREATE TABLE IF NOT EXISTS certificates (
  id INTEGER PRIMARY KEY, common_name TEXT NOT NULL, sans TEXT NOT NULL DEFAULT '[]',
  acme_directory TEXT NOT NULL, challenge TEXT NOT NULL CHECK(challenge IN ('http-01','dns-01')),

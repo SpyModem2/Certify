@@ -7,7 +7,7 @@ import sys
 from .audit import AuditLog
 from .config import Settings
 from .database import Database
-from .security import hash_password
+from .security import PASSWORD_POLICY, hash_password, validate_password
 
 
 def _database(settings: Settings) -> Database:
@@ -18,22 +18,26 @@ def _database(settings: Settings) -> Database:
 
 def init_admin(username: str) -> int:
     settings = Settings.from_env()
-    print("Create the password for the first Certify administrator (at least 12 characters).")
+    print(f"Create the password for the first Certify administrator. {PASSWORD_POLICY}")
     password = getpass.getpass("Administrator password: ")
     confirmation = getpass.getpass("Repeat administrator password: ")
     if password != confirmation:
         print("Passwords do not match", file=sys.stderr)
         return 2
-    if len(password) < 12:
-        print("Password must contain at least 12 characters", file=sys.stderr)
+    try:
+        validate_password(password)
+    except ValueError as error:
+        print(error, file=sys.stderr)
         return 2
     database = _database(settings)
     try:
         with database.connect() as connection:
-            connection.execute(
+            cursor = connection.execute(
                 "INSERT INTO users(username,password_hash,role) VALUES(?,?,'admin')",
                 (username, hash_password(password)),
             )
+            password_hash = connection.execute("SELECT password_hash FROM users WHERE id=?", (cursor.lastrowid,)).fetchone()["password_hash"]
+            connection.execute("INSERT INTO password_history(user_id,password_hash) VALUES(?,?)", (cursor.lastrowid, password_hash))
     except Exception as error:
         print(f"Could not create administrator: {error}", file=sys.stderr)
         return 1
