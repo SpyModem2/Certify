@@ -43,6 +43,13 @@ class CertificateCreate(BaseModel):
     challenge: Literal["http-01", "dns-01"]
     key_mode: Literal["managed", "csr"] = "managed"
     csr_pem: str | None = None
+    target_ids: list[int] = Field(default_factory=list, max_length=100)
+
+
+class TargetAssignments(BaseModel):
+    """The complete set of systems to which a certificate is deployed."""
+
+    target_ids: list[int] = Field(max_length=100)
 
 
 class TargetCreate(BaseModel):
@@ -151,7 +158,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 rows = connection.execute("SELECT id,common_name,sans,challenge,key_mode,status,not_after,created_at FROM certificates ORDER BY id DESC").fetchall()
             else:
                 rows = connection.execute("SELECT c.id,c.common_name,c.sans,c.challenge,c.key_mode,c.status,c.not_after,c.created_at FROM certificates c JOIN certificate_users cu ON cu.certificate_id=c.id WHERE cu.user_id=? ORDER BY c.id DESC", (actor.id,)).fetchall()
-        return [{**dict(row), "sans": json.loads(row["sans"])} for row in rows]
+            certificate_ids = [row["id"] for row in rows]
+            targets_by_certificate: dict[int, list[dict[str, object]]] = {item: [] for item in certificate_ids}
+            if certificate_ids:
+                placeholders = ",".join("?" for _ in certificate_ids)
+                assigned_targets = connection.execute(
+                    f"SELECT ct.certificate_id,t.id,t.name,t.adapter,t.hostname,t.ip_address "
+                    f"FROM certificate_targets ct JOIN targets t ON t.id=ct.target_id "
+                    f"WHERE ct.certificate_id IN ({placeholders}) ORDER BY t.name",
+                    certificate_ids,
+                ).fetchall()
+                for target in assigned_targets:
+                    targets_by_certificate[target["certificate_id"]].append(
+                        {key: target[key] for key in ("id", "name", "adapter", "hostname", "ip_address")}
+                    )
+        return [
+            {**dict(row), "sans": json.loads(row["sans"]), "targets": targets_by_certificate[row["id"]]}
+            for row in rows
+        ]
 
     @app.post("/api/v1/certificates", status_code=201)
     def create_certificate(body: CertificateCreate, actor: Annotated[Principal, Depends(roles("admin", "operator"))]) -> dict[str, object]:
@@ -162,9 +186,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if body.key_mode == "csr" and not body.csr_pem:
             raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "csr_pem is required for CSR mode")
         with database.connect() as connection:
+            requested_targets = list(dict.fromkeys(body.target_ids))
+            if requested_targets:
+                placeholders = ",".join("?" for _ in requested_targets)
+                existing = connection.execute(
+                    f"SELECT id FROM targets WHERE id IN ({placeholders})", requested_targets
+                ).fetchall()
+                if len(existing) != len(requested_targets):
+                    raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "one or more target systems do not exist")
             cursor = connection.execute("INSERT INTO certificates(common_name,sans,acme_directory,challenge,key_mode,csr_pem,created_by) VALUES(?,?,?,?,?,?,?)", (body.common_name, json.dumps(body.sans), body.acme_directory, body.challenge, body.key_mode, body.csr_pem, actor.id))
             connection.execute("INSERT INTO certificate_users(certificate_id,user_id) VALUES(?,?)", (cursor.lastrowid, actor.id))
-        audit.append(actor.username, "certificate.request", f"certificate:{cursor.lastrowid}", {"common_name": body.common_name, "challenge": body.challenge, "key_mode": body.key_mode})
+            connection.executemany(
+                "INSERT INTO certificate_targets(certificate_id,target_id) VALUES(?,?)",
+                ((cursor.lastrowid, target_id) for target_id in requested_targets),
+            )
+        audit.append(actor.username, "certificate.request", f"certificate:{cursor.lastrowid}", {"common_name": body.common_name, "challenge": body.challenge, "key_mode": body.key_mode, "target_ids": requested_targets})
         return {"id": cursor.lastrowid, "status": "pending"}
 
     @app.get("/api/v1/certificates/{certificate_id}/download")
@@ -226,6 +262,28 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise
         audit.append(actor.username, "certificate.target.assign", f"certificate:{certificate_id}", {"target_id": target_id})
         return Response(status_code=204)
+
+    @app.put("/api/v1/certificates/{certificate_id}/targets")
+    def assign_targets(certificate_id: int, body: TargetAssignments, actor: Annotated[Principal, Depends(roles("admin"))]) -> dict[str, list[int]]:
+        """Replace all system assignments in one operation (useful for wildcard certificates)."""
+        target_ids = list(dict.fromkeys(body.target_ids))
+        with database.connect() as connection:
+            if not connection.execute("SELECT 1 FROM certificates WHERE id=?", (certificate_id,)).fetchone():
+                raise HTTPException(status.HTTP_404_NOT_FOUND, "certificate not found")
+            if target_ids:
+                placeholders = ",".join("?" for _ in target_ids)
+                existing = connection.execute(
+                    f"SELECT id FROM targets WHERE id IN ({placeholders})", target_ids
+                ).fetchall()
+                if len(existing) != len(target_ids):
+                    raise HTTPException(status.HTTP_404_NOT_FOUND, "one or more target systems do not exist")
+            connection.execute("DELETE FROM certificate_targets WHERE certificate_id=?", (certificate_id,))
+            connection.executemany(
+                "INSERT INTO certificate_targets(certificate_id,target_id) VALUES(?,?)",
+                ((certificate_id, target_id) for target_id in target_ids),
+            )
+        audit.append(actor.username, "certificate.targets.replace", f"certificate:{certificate_id}", {"target_ids": target_ids})
+        return {"target_ids": target_ids}
 
     @app.put("/api/v1/certificates/{certificate_id}/csr", status_code=204)
     def upload_csr(certificate_id: int, body: CsrUpload, actor: Annotated[Principal, Depends(roles("admin", "operator"))]) -> Response:

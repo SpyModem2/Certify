@@ -7,9 +7,6 @@ install -d -m 0750 -o certify -g certify /var/lib/certify
 install -d -m 0750 -o root -g certify /etc/certify /opt/certify
 python3 -m venv /opt/certify/venv
 /opt/certify/venv/bin/pip install --no-index --find-links "$root/wheelhouse" "$root"/dist/certify_server-*.whl
-if [[ ! -e /etc/certify/certify.conf ]]; then
-  install -m 0640 -o root -g certify "$root/packaging/certify.conf.example" /etc/certify/certify.conf
-fi
-install -m 0644 "$root/packaging/certify.service" /etc/systemd/system/certify.service
-systemctl daemon-reload
-echo "Edit /etc/certify/certify.conf, create the initial admin, then start certify."
+# shellcheck source=packaging/install-common.sh
+source "$root/packaging/install-common.sh"
+finish_install "$root"
