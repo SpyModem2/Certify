@@ -1,0 +1,26 @@
+[Unit]
+Description=Certify certificate lifecycle manager
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=certify
+Group=certify
+EnvironmentFile=/etc/certify/certify.conf
+ExecStart=/opt/certify/venv/bin/certify serve --host 127.0.0.1 --port 8080
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/certify
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+
+[Install]
+WantedBy=multi-user.target
