@@ -18,10 +18,14 @@ def _database(settings: Settings) -> Database:
 
 def init_admin(username: str) -> int:
     settings = Settings.from_env()
-    password = getpass.getpass("Initial password: ")
-    confirmation = getpass.getpass("Repeat password: ")
+    print("Create the password for the first Certify administrator (at least 12 characters).")
+    password = getpass.getpass("Administrator password: ")
+    confirmation = getpass.getpass("Repeat administrator password: ")
     if password != confirmation:
         print("Passwords do not match", file=sys.stderr)
+        return 2
+    if len(password) < 12:
+        print("Password must contain at least 12 characters", file=sys.stderr)
         return 2
     database = _database(settings)
     try:

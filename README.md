@@ -73,8 +73,14 @@ Zielserver übertragen und dort als `root` ausführen:
 
 ```bash
 ./packaging/install-offline.sh
-systemctl enable --now certify
 ```
+
+Das Installationsprogramm führt anschließend Schritt für Schritt durch die
+Konfiguration. Es erklärt jede benötigte Angabe (Browser-DNS-Namen,
+Sitzungsdauer, Mailserver und Administratorkonto), erzeugt das Systemgeheimnis
+automatisch und kann den Dienst direkt starten. Für automatisierte Installationen
+kann `CERTIFY_NON_INTERACTIVE=true` zusammen mit den in der Tabelle genannten
+`CERTIFY_*`-Variablen gesetzt werden.
 
 Container werden weder benötigt noch unterstützt.
 
@@ -86,6 +92,21 @@ Wenn der Zielserver PyPI erreichen kann, installiert das Online-Skript die über
 ```bash
 sudo CERTIFY_VERSION=0.1.0 ./packaging/install-online.sh
 ```
+
+## Zertifikate mehreren Systemen zuweisen
+
+Beim Anlegen eines Zertifikats kann `target_ids` eine Liste aller Zielsysteme
+enthalten. Vorhandene Zuordnungen lassen sich atomar ersetzen; dies ist
+insbesondere für Wildcard-Zertifikate gedacht:
+
+```http
+PUT /api/v1/certificates/42/targets
+Content-Type: application/json
+
+{"target_ids": [3, 7, 11]}
+```
+
+Die Zertifikatsliste liefert die zugeordneten Systeme im Feld `targets` zurück.
 
 ## Tests
 
