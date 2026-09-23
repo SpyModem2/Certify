@@ -117,16 +117,92 @@ folgende Voraussetzungen hinzu:
 
 ### Online-Installation
 
-Repository beziehungsweise Release-Artefakt auf den Zielserver kopieren und im
-Projektverzeichnis ausführen:
+#### Erste Installation aus dem Git-Repository
+
+Die folgenden Schritte sind auf dem RHEL-10-Zielserver auszuführen. Befehle mit
+`sudo` benötigen ein Konto mit Administratorrechten. Das Repository sollte als
+normaler Benutzer ausgecheckt werden; nur das Installationsskript läuft als
+`root`.
+
+1. System aktualisieren und Git installieren:
+
+   ```bash
+   sudo dnf upgrade -y
+   sudo dnf install -y git
+   ```
+
+2. Repository klonen und in das Projektverzeichnis wechseln:
+
+   ```bash
+   git clone https://github.com/SpyModem2/Certify.git
+   cd Certify
+   ```
+
+   Wurde das Repository bereits geklont oder als vorbereitete VM ausgeliefert,
+   reicht stattdessen der Wechsel in das vorhandene Projektverzeichnis.
+
+3. Vor der Installation den gewünschten Branch auswählen und den aktuellen
+   Stand laden. `<BRANCH>` ist beispielsweise `main`; die verfügbaren Branches
+   zeigt `git branch -a` an:
+
+   ```bash
+   git fetch --prune
+   git switch <BRANCH>
+   git pull --ff-only
+   git status
+   ```
+
+   `git status` sollte keine lokalen Änderungen melden. `--ff-only` verhindert,
+   dass beim Aktualisieren unbemerkt ein Merge-Commit auf dem Server entsteht.
+   Für eine reproduzierbare Installation kann anstelle eines Branches ein
+   freigegebener Tag ausgecheckt werden (`git switch --detach <TAG>`).
+
+4. Installer aus dem Wurzelverzeichnis des Repositories starten:
+
+   ```bash
+   sudo ./packaging/install-online.sh
+   ```
+
+5. Die Fragen zu Hostnamen, Sitzung, SMTP und TLS beantworten. Anschließend ein
+   starkes Passwort für das erste Administratorkonto vergeben und die Frage
+   nach dem Start des Dienstes mit `ja` beantworten. Bei einer
+   Self-Signed-Installation muss der beim TLS-Schritt angegebene Hostname auch
+   in der Liste der vertrauenswürdigen Hosts enthalten sein.
+
+6. Installation und HTTPS-Erreichbarkeit prüfen (Hostname anpassen):
+
+   ```bash
+   sudo systemctl status certify --no-pager
+   curl --cacert /etc/certify/tls/fullchain.pem https://certify.intern/
+   sudo journalctl -u certify -n 50 --no-pager
+   ```
+
+   Danach ist die Anmeldung im Browser unter `https://<HOSTNAME>/` mit dem im
+   Installer angelegten Administratorkonto möglich. Bei einem Self-Signed-
+   Zertifikat muss dessen Vertrauen auf den zugreifenden Clients separat
+   eingerichtet werden.
+
+Das Skript installiert Certify aus dem aktuellen lokalen Checkout in eine
+eigene virtuelle Umgebung. Aus dem Internet werden neben den durch `dnf`
+installierten RHEL-Paketen ausschließlich die Python-Abhängigkeiten geladen.
+
+#### Erneute Ausführung vor der ersten Inbetriebnahme
+
+Falls zwischen dem Klonen und der eigentlichen Erstinstallation Zeit vergangen
+ist, den Checkout unmittelbar vorher aktualisieren und danach den Installer
+starten:
 
 ```bash
+cd Certify
+git status
+git pull --ff-only
 sudo ./packaging/install-online.sh
 ```
 
-Das Skript installiert Certify direkt aus dem vorliegenden Projektverzeichnis
-in eine eigene virtuelle Umgebung. Aus dem Internet werden ausschließlich die
-Python-Abhängigkeiten geladen.
+Lokale Änderungen müssen vor `git pull` bewusst committed, verworfen oder mit
+`git stash` zwischengespeichert werden. Die Laufzeitdaten liegen nicht im
+Repository, sondern unter `/var/lib/certify`; Konfiguration und Schlüssel
+liegen unter `/etc/certify`. Sie werden durch `git pull` daher nicht verändert.
 
 ### Offline-Installation
 
