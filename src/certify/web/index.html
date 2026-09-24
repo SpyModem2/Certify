@@ -5,8 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light">
   <title>Certify · Zertifikatsverwaltung</title>
-  <link rel="stylesheet" href="/assets/app.css">
-  <script src="/assets/app.js" defer></script>
+  <link rel="stylesheet" href="/assets/app.css?v=2">
+  <script src="/assets/app.js?v=2" defer></script>
 </head>
 <body>
   <div id="toast-region" class="toast-region" aria-live="polite"></div>
@@ -55,6 +55,6 @@
     </div>
   </div>
 
-  <dialog id="modal"><form method="dialog" class="modal-card"><header><div><p class="eyebrow" id="modal-kicker"></p><h2 id="modal-title"></h2></div><button class="icon-button" value="cancel" aria-label="Schließen">×</button></header><div id="modal-body"></div></form></dialog>
+  <dialog id="modal"><div class="modal-card"><header><div><p class="eyebrow" id="modal-kicker"></p><h2 id="modal-title"></h2></div><button type="button" class="icon-button" data-close aria-label="Schließen">×</button></header><div id="modal-body"></div></div></dialog>
 </body>
 </html>

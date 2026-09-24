@@ -52,6 +52,7 @@ def test_health_and_localized_page(tmp_path: Path) -> None:
         assert "default-src 'self'" in page.headers["content-security-policy"]
         assert client.get("/assets/app.css").status_code == 200
         assert client.get("/assets/app.js").status_code == 200
+        assert '<dialog id="modal"><div class="modal-card">' in page.text
 
 
 def test_frontend_supporting_inventory_endpoints(tmp_path: Path) -> None:
@@ -208,6 +209,31 @@ def test_user_identity_email_and_totp_lifecycle(tmp_path: Path) -> None:
         )
         assert created.status_code == 201
         assert created.json()["first_name"] == "Alice"
+
+        renamed = client.put(
+            "/api/v1/users/me/name",
+            headers=headers,
+            json={"first_name": "Ada", "last_name": "Admin"},
+        )
+        assert renamed.json() == {"first_name": "Ada", "last_name": "Admin"}
+        assert client.get("/api/v1/users/me", headers=headers).json()["last_name"] == "Admin"
+
+        updated = client.put(
+            f"/api/v1/users/{created.json()['id']}",
+            headers=headers,
+            json={
+                "first_name": "Alicia",
+                "last_name": "Example-Smith",
+                "email": "alicia@example.test",
+                "role": "auditor",
+                "active": False,
+            },
+        )
+        assert updated.status_code == 200
+        assert updated.json()["first_name"] == "Alicia"
+        alice = next(user for user in client.get("/api/v1/users", headers=headers).json() if user["username"] == "alice")
+        assert alice["role"] == "auditor"
+        assert alice["active"] == 0
 
         changed = client.put(
             "/api/v1/users/me/email", headers=headers, json={"email": "admin@example.test"}
