@@ -107,6 +107,7 @@ Sicherheitsgründen können API-Keys keine weiteren Keys erzeugen.
 | `CERTIFY_DATA_DIR` | Datenbank- und Zustandsverzeichnis | `/var/lib/certify` |
 | `CERTIFY_SECRET` | Schlüssel für Sitzungen und Audit-HMAC | keine sichere Vorgabe |
 | `CERTIFY_SESSION_MINUTES` | Sitzungsdauer | `30` |
+| `CERTIFY_PASSWORD_MAX_AGE_DAYS` | Optionale maximale Kennwortgültigkeit in Tagen; leer = deaktiviert | leer |
 | `CERTIFY_TRUSTED_HOSTS` | kommaseparierte Hostnamen | `localhost,127.0.0.1` |
 | `CERTIFY_DEBUG` | Entwicklungsmodus | `false` |
 | `CERTIFY_SMTP_HOST` / `CERTIFY_SMTP_PORT` | lokaler SMTP-Relay | `localhost` / `25` |

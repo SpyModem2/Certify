@@ -1,6 +1,8 @@
 CERTIFY_DATA_DIR=/var/lib/certify
 CERTIFY_SECRET=replace-with-at-least-32-random-characters
 CERTIFY_SESSION_MINUTES=30
+# Optional: leer lassen, um keinen regelmäßigen Passwortwechsel zu erzwingen.
+CERTIFY_PASSWORD_MAX_AGE_DAYS=
 CERTIFY_TRUSTED_HOSTS=certify.example.internal
 CERTIFY_DEBUG=false
 CERTIFY_SMTP_HOST=localhost

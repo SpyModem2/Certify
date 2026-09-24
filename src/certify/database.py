@@ -14,7 +14,8 @@ CREATE TABLE IF NOT EXISTS users (
  first_name TEXT, last_name TEXT, totp_secret TEXT, totp_pending_secret TEXT,
  email TEXT, notify_level TEXT NOT NULL DEFAULT 'errors'
  CHECK(notify_level IN ('none','errors','expiry','all')), active INTEGER NOT NULL DEFAULT 1,
- created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+ created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+ password_changed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE TABLE IF NOT EXISTS password_history (
  id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -86,6 +87,12 @@ class Database:
                 connection.execute("ALTER TABLE users ADD COLUMN totp_pending_secret TEXT")
             if "notify_level" not in user_columns:
                 connection.execute("ALTER TABLE users ADD COLUMN notify_level TEXT NOT NULL DEFAULT 'errors'")
+            if "password_changed_at" not in user_columns:
+                connection.execute("ALTER TABLE users ADD COLUMN password_changed_at TEXT")
+                connection.execute(
+                    "UPDATE users SET password_changed_at=COALESCE(created_at,CURRENT_TIMESTAMP) "
+                    "WHERE password_changed_at IS NULL"
+                )
             target_columns = {row["name"] for row in connection.execute("PRAGMA table_info(targets)")}
             if "hostname" not in target_columns:
                 connection.execute("ALTER TABLE targets ADD COLUMN hostname TEXT")
