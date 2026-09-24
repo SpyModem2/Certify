@@ -117,6 +117,34 @@ folgende Voraussetzungen hinzu:
 
 ### Online-Installation
 
+#### Installation mit einem Copy-Paste-Befehl
+
+Auf einem frisch bereitgestellten RHEL-10-Zielserver kann die vollständige
+Online-Erstinstallation direkt aus diesem Repository gestartet werden:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/SpyModem2/Certify/main/install.sh | sudo bash
+```
+
+Der Bootstrap-Installer installiert Git und CA-Zertifikate, lädt den Branch
+`main` in ein temporaeres Verzeichnis und startet anschließend den vorhandenen
+interaktiven Online-Installer. Das temporaere Checkout wird am Ende wieder
+entfernt. Der Konfigurationsdialog bleibt auch beim Aufruf ueber die Pipe mit
+dem Terminal verbunden.
+
+Soll gezielt ein anderer Branch oder ein Release-Tag installiert werden, kann
+dessen Name als Argument angegeben werden (nur vertrauenswürdige Refs
+verwenden):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/SpyModem2/Certify/main/install.sh | sudo bash -s -- <BRANCH-ODER-TAG>
+```
+
+Vor dem Ausführen eines aus dem Internet geladenen Skripts empfiehlt es sich,
+den Inhalt unter der angegebenen URL zu prüfen. Voraussetzungen sind
+Root-Rechte, `dnf`, erreichbare RHEL-Paketquellen sowie Internetzugriff auf
+GitHub und die Python-Paketquellen.
+
 #### Erste Installation aus dem Git-Repository
 
 Die folgenden Schritte sind auf dem RHEL-10-Zielserver auszuführen. Befehle mit

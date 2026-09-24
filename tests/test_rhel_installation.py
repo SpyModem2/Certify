@@ -8,6 +8,7 @@ from pathlib import Path
 ROOT = Path(__file__).parents[1]
 INSTALL_COMMON = ROOT / "packaging" / "install-common.sh"
 UPDATE_COMMON = ROOT / "packaging" / "update-common.sh"
+BOOTSTRAP_INSTALLER = ROOT / "install.sh"
 
 
 def _command(path: Path, name: str, body: str) -> None:
@@ -134,6 +135,17 @@ def test_online_installer_uses_local_project_source() -> None:
     assert 'pip install "$root"' in script
     assert "CERTIFY_VERSION" not in script
     assert "certify-server==" not in script
+
+
+def test_bootstrap_installer_fetches_repository_and_starts_online_install() -> None:
+    script = BOOTSTRAP_INSTALLER.read_text()
+
+    assert "dnf install -y git ca-certificates" in script
+    assert "git check-ref-format --branch" in script
+    assert "git clone --quiet --depth 1 --branch" in script
+    assert '"$checkout/packaging/install-online.sh"' in script
+    assert "exec </dev/tty" in script
+    assert "trap cleanup EXIT" in script
 
 
 def test_updaters_use_transactional_common_flow() -> None:
