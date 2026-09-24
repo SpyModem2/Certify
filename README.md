@@ -40,12 +40,10 @@ vollständige interaktive Installation (Root-Rechte, `dnf`, erreichbare
 Paketquellen und Internetzugang werden vorausgesetzt):
 
 ```bash
-sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/SpyModem2/Certify/main/install.sh)"
+curl -fsSL https://raw.githubusercontent.com/SpyModem2/Certify/main/install.sh | sudo bash
 ```
 
-Der Befehl lädt den Bootstrap-Installer vom Branch `main` vollständig, bevor er
-ihn startet. Dadurch bleibt die Standardeingabe mit dem Terminal verbunden und
-der interaktive Konfigurationsdialog kann Eingaben lesen. Hinweise zur Prüfung
+Der Befehl lädt den Bootstrap-Installer vom Branch `main`. Hinweise zur Prüfung
 des Skripts, zur Installation eines anderen Branches oder Tags sowie zur
 Offline-Installation stehen unter [Installation auf RHEL 10](#installation-auf-rhel-10).
 
@@ -109,6 +107,7 @@ Sicherheitsgründen können API-Keys keine weiteren Keys erzeugen.
 | `CERTIFY_DATA_DIR` | Datenbank- und Zustandsverzeichnis | `/var/lib/certify` |
 | `CERTIFY_SECRET` | Schlüssel für Sitzungen und Audit-HMAC | keine sichere Vorgabe |
 | `CERTIFY_SESSION_MINUTES` | Sitzungsdauer | `30` |
+| `CERTIFY_PASSWORD_MAX_AGE_DAYS` | Optionale maximale Kennwortgültigkeit in Tagen; leer = deaktiviert | leer |
 | `CERTIFY_TRUSTED_HOSTS` | kommaseparierte Hostnamen | `localhost,127.0.0.1` |
 | `CERTIFY_DEBUG` | Entwicklungsmodus | `false` |
 | `CERTIFY_SMTP_HOST` / `CERTIFY_SMTP_PORT` | lokaler SMTP-Relay | `localhost` / `25` |
@@ -155,9 +154,8 @@ sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/SpyModem2/Certify/m
 Der Bootstrap-Installer installiert Git und CA-Zertifikate, lädt den Branch
 `main` in ein temporäres Verzeichnis und startet anschließend den vorhandenen
 interaktiven Online-Installer. Das temporäre Checkout wird am Ende wieder
-entfernt. Das Skript wird bewusst nicht direkt an `bash` weitergeleitet: Es wird
-zuerst vollständig geladen, damit der anschließende Konfigurationsdialog seine
-Eingaben weiterhin vom Terminal lesen kann.
+entfernt. Der Konfigurationsdialog bleibt auch beim Aufruf über die Pipe mit
+dem Terminal verbunden.
 
 Soll gezielt ein anderer Branch oder ein Release-Tag installiert werden, kann
 dessen Name als Argument angegeben werden (nur vertrauenswürdige Refs

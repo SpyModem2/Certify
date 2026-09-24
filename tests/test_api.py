@@ -265,6 +265,19 @@ def test_user_identity_email_and_totp_lifecycle(tmp_path: Path) -> None:
         assert confirmation.status_code == 204
         assert client.get("/api/v1/users/me", headers=headers).json()["totp_enabled"] == 1
 
+        replacement = client.post(
+            "/api/v1/users/me/totp/setup",
+            headers=headers,
+            json={"current_code": totp(setup.json()["secret"])},
+        )
+        assert replacement.status_code == 200
+        assert replacement.json()["secret"] != setup.json()["secret"]
+        assert client.post(
+            "/api/v1/users/me/totp/confirm",
+            headers=headers,
+            json={"code": totp(replacement.json()["secret"])},
+        ).status_code == 204
+
         without_code = client.post(
             "/api/v1/auth/login",
             json={"username": "admin", "password": "Correct horse battery staple!7"},
@@ -273,3 +286,39 @@ def test_user_identity_email_and_totp_lifecycle(tmp_path: Path) -> None:
         reset = client.delete("/api/v1/users/1/totp", headers=headers)
         assert reset.status_code == 204
         assert client.get("/api/v1/users/me", headers=headers).json()["totp_enabled"] == 0
+
+
+def test_failed_login_audit_records_specific_reason(tmp_path: Path) -> None:
+    with app_client(tmp_path) as client:
+        assert client.post("/api/v1/auth/login", json={
+            "username": "admin", "password": "wrong"
+        }).status_code == 401
+        with client.app.state.database.connect() as connection:
+            details = connection.execute(
+                "SELECT details FROM audit_log WHERE action='auth.login.failed' ORDER BY sequence DESC"
+            ).fetchone()["details"]
+        assert '"reason": "invalid_password"' in details
+
+
+def test_expired_password_only_allows_password_change(tmp_path: Path) -> None:
+    settings = Settings(tmp_path, "test-secret-that-is-long-enough-123", 30, ("testserver",), False,
+                        password_max_age_days=30)
+    app = create_app(settings)
+    app.state.database.initialize()
+    with app.state.database.connect() as connection:
+        connection.execute(
+            "INSERT INTO users(username,password_hash,role,password_changed_at) VALUES(?,?,?,'2020-01-01')",
+            ("admin", hash_password("Correct horse battery staple!7"), "admin"),
+        )
+    with TestClient(app) as client:
+        login = client.post("/api/v1/auth/login", json={
+            "username": "admin", "password": "Correct horse battery staple!7"
+        })
+        assert login.json()["password_change_required"] is True
+        headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+        assert client.get("/api/v1/certificates", headers=headers).status_code == 403
+        assert client.put("/api/v1/users/me/password", headers=headers, json={
+            "current_password": "Correct horse battery staple!7",
+            "new_password": "An even better Password!8",
+        }).status_code == 204
+        assert client.get("/api/v1/certificates", headers=headers).status_code == 200
