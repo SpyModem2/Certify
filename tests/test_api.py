@@ -1,5 +1,6 @@
 import base64
 from pathlib import Path
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
@@ -82,6 +83,59 @@ def test_ca_account_terms_and_certificate_assignment(tmp_path: Path) -> None:
         inventory = client.get("/api/v1/certificates", headers=headers).json()[0]
         assert inventory["ca_name"] == "Let's Encrypt Production"
         assert inventory["status_detail"].startswith("Auftrag angelegt")
+
+
+def test_ca_account_can_be_updated_reenabled_and_tested(tmp_path: Path) -> None:
+    with app_client(tmp_path) as client:
+        login = client.post(
+            "/api/v1/auth/login",
+            json={"username": "admin", "password": "Correct horse battery staple!7"},
+        )
+        headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+        created = client.post(
+            "/api/v1/ca-accounts",
+            headers=headers,
+            json={
+                "name": "Internal CA",
+                "provider": "custom",
+                "directory_url": "https://ca.example.test/acme/directory",
+                "email": "old@example.test",
+                "terms_accepted": True,
+            },
+        )
+        account_id = created.json()["id"]
+
+        updated = client.put(
+            f"/api/v1/ca-accounts/{account_id}",
+            headers=headers,
+            json={
+                "name": "Internal CA Production",
+                "provider": "custom",
+                "directory_url": "https://ca.example.test/acme/v2/directory",
+                "email": "pki@example.test",
+                "terms_url": "https://ca.example.test/terms",
+                "terms_accepted": True,
+            },
+        )
+        assert updated.status_code == 200
+        assert updated.json()["name"] == "Internal CA Production"
+        assert updated.json()["email"] == "pki@example.test"
+
+        assert client.delete(f"/api/v1/ca-accounts/{account_id}", headers=headers).status_code == 204
+        enabled = client.post(f"/api/v1/ca-accounts/{account_id}/enable", headers=headers)
+        assert enabled.status_code == 200
+        assert enabled.json()["enabled"] == 1
+
+        with patch("certify.api.test_acme_connection", return_value={"reachable": True, "endpoints": ["newNonce", "newAccount", "newOrder"]}) as connection_test:
+            tested = client.post(f"/api/v1/ca-accounts/{account_id}/test", headers=headers)
+        assert tested.status_code == 200
+        assert tested.json()["reachable"] is True
+        connection_test.assert_called_once_with("https://ca.example.test/acme/v2/directory")
+
+        actions = [entry["action"] for entry in client.get("/api/v1/audit", headers=headers).json()]
+        assert "ca_account.update" in actions
+        assert "ca_account.enable" in actions
+        assert "ca_account.test" in actions
 
 
 def test_health_and_localized_page(tmp_path: Path) -> None:
