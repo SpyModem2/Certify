@@ -44,6 +44,26 @@ def test_admin_can_download_restore_and_request_update(tmp_path: Path) -> None:
         assert client.get("/api/v1/maintenance", headers=headers).json()["update_status"] == "queued"
 
 
+def test_admin_can_request_and_read_update_check(tmp_path: Path) -> None:
+    with app_client(tmp_path) as client:
+        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "Correct horse battery staple!7"})
+        headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+        response = client.post("/api/v1/maintenance/update/check", headers=headers, json={})
+        assert response.status_code == 202
+        assert (tmp_path / "update-check.request").is_file()
+        assert client.get("/api/v1/maintenance", headers=headers).json()["check_status"] == "queued"
+
+        (tmp_path / "update-check.request").unlink()
+        (tmp_path / "update-check-status.json").write_text(
+            '{"check_status":"success","update_available":false,'
+            '"latest_version":"0.1.0","check_message":"Die installierte Version ist aktuell."}'
+        )
+        status_response = client.get("/api/v1/maintenance", headers=headers).json()
+        assert status_response["check_status"] == "success"
+        assert status_response["update_available"] is False
+        assert "aktuell" in status_response["check_message"]
+
+
 def test_maintenance_rejects_operator(tmp_path: Path) -> None:
     from certify.security import hash_password
 

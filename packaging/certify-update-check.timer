@@ -1,0 +1,11 @@
+[Unit]
+Description=Check daily for Certify updates
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+RandomizedDelaySec=30m
+Unit=certify-update-check.service
+
+[Install]
+WantedBy=timers.target

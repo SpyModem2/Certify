@@ -65,12 +65,18 @@ certify_update() {
   install -m 0644 "$files_root/packaging/certify.service" /etc/systemd/system/certify.service
   install -m 0755 "$files_root/packaging/configure-tls.sh" /usr/local/sbin/certify-configure-tls
   install -m 0644 "$files_root/packaging/certify-update.service" /etc/systemd/system/certify-update.service
+  install -m 0644 "$files_root/packaging/certify-update-check.service" /etc/systemd/system/certify-update-check.service
+  install -m 0644 "$files_root/packaging/certify-update-check.timer" /etc/systemd/system/certify-update-check.timer
   local maintenance_data_dir
   maintenance_data_dir="$(sed -n 's/^CERTIFY_DATA_DIR=//p' /etc/certify/certify.conf | head -n1)"
   sed "s|@CERTIFY_DATA_DIR@|${maintenance_data_dir:-/var/lib/certify}|g" \
     "$files_root/packaging/certify-update.path" >/etc/systemd/system/certify-update.path
   chmod 0644 /etc/systemd/system/certify-update.path
+  sed "s|@CERTIFY_DATA_DIR@|${maintenance_data_dir:-/var/lib/certify}|g" \
+    "$files_root/packaging/certify-update-check.path" >/etc/systemd/system/certify-update-check.path
+  chmod 0644 /etc/systemd/system/certify-update-check.path
   install -m 0755 "$files_root/packaging/web-update.sh" /usr/local/sbin/certify-web-update
+  install -m 0755 "$files_root/packaging/check-update.sh" /usr/local/sbin/certify-update-check
   systemctl stop certify || true
   rm -rf "$previous"
   mv "$active" "$previous"
@@ -78,6 +84,7 @@ certify_update() {
 
   echo "[4/6] systemd neu laden und Certify vollstaendig neu starten ..."
   systemctl daemon-reload
+  systemctl enable --now certify-update.path certify-update-check.path certify-update-check.timer
   if ! systemctl restart certify; then
     attempt=0
   else
