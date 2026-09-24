@@ -1,10 +1,11 @@
 import base64
+import asyncio
 import hashlib
 import hmac
 import json
 import secrets
 import time
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from io import BytesIO
 from urllib.parse import quote
 from datetime import UTC, datetime, timedelta
@@ -28,7 +29,7 @@ from .audit import AuditLog
 from .config import Settings
 from .database import Database
 from .mailer import send_local_mail
-from .maintenance import BackupError, MAX_BACKUP_SIZE, create_backup, restore_backup
+from .maintenance import BACKUP_FILENAME, BackupError, MAX_BACKUP_SIZE, create_automatic_backup, create_backup, restore_backup
 from .providers import test_acme_connection, validate_acme_directory
 from .security import PASSWORD_POLICY, hash_password, new_totp_secret, sign_token, validate_password, verify_password, verify_token, verify_totp
 from .secrets import SecretBox
@@ -224,6 +225,13 @@ class BackupRequest(BaseModel):
     password: str | None = Field(default=None, min_length=12, max_length=1024)
 
 
+class AutomaticBackupSettings(BaseModel):
+    enabled: bool
+    interval_hours: int = Field(default=24, ge=1, le=24 * 31)
+    retention: int = Field(default=14, ge=1, le=100)
+    password: str | None = Field(default=None, min_length=12, max_length=1024)
+
+
 class RestoreRequest(BackupRequest):
     data: str = Field(min_length=1)
 
@@ -243,10 +251,46 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     audit = AuditLog(database, settings.secret)
     secret_box = SecretBox(settings.secret)
 
+    automatic_config_file = settings.data_dir / "automatic-backup.json"
+    automatic_backup_dir = settings.data_dir / "backups"
+
+    def automatic_config() -> dict[str, object]:
+        try:
+            value = json.loads(automatic_config_file.read_text(encoding="utf-8"))
+            return value if isinstance(value, dict) else {}
+        except (OSError, json.JSONDecodeError):
+            return {}
+
+    def run_automatic_backup_if_due() -> Path | None:
+        config = automatic_config()
+        if not config.get("enabled") or not config.get("password"):
+            return None
+        backups = sorted((p for p in automatic_backup_dir.glob("*.certify-backup") if BACKUP_FILENAME.fullmatch(p.name)), key=lambda p: p.stat().st_mtime, reverse=True)
+        interval = int(config.get("interval_hours", 24)) * 3600
+        if backups and time.time() - backups[0].stat().st_mtime < interval:
+            return None
+        password = secret_box.decrypt(str(config["password"]), context="automatic-backup").decode()
+        return create_automatic_backup(database.path, automatic_backup_dir, password, keep=int(config.get("retention", 14)))
+
+    async def automatic_backup_worker() -> None:
+        while True:
+            try:
+                await asyncio.to_thread(run_automatic_backup_if_due)
+            except Exception:
+                # A failed backup must not terminate the web service or scheduler.
+                pass
+            await asyncio.sleep(60)
+
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         database.initialize()
-        yield
+        worker = asyncio.create_task(automatic_backup_worker())
+        try:
+            yield
+        finally:
+            worker.cancel()
+            with suppress(asyncio.CancelledError):
+                await worker
 
     app = FastAPI(title="Certify", version=__version__, lifespan=lifespan)
     app.state.database = database
@@ -918,7 +962,44 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 result["check_status"] = "unknown"
         if (settings.data_dir / "update-check.request").exists():
             result["check_status"] = "queued"
+        config = automatic_config()
+        backups = sorted((p for p in automatic_backup_dir.glob("*.certify-backup") if BACKUP_FILENAME.fullmatch(p.name)), key=lambda p: p.stat().st_mtime, reverse=True)
+        result["automatic_backup"] = {
+            "enabled": bool(config.get("enabled", False)),
+            "interval_hours": int(config.get("interval_hours", 24)),
+            "retention": int(config.get("retention", 14)),
+        }
+        result["backups"] = [{"name": p.name, "size": p.stat().st_size, "created_at": datetime.fromtimestamp(p.stat().st_mtime, UTC).isoformat()} for p in backups]
         return result
+
+    @app.put("/api/v1/maintenance/backup/automatic")
+    def configure_automatic_backup(body: AutomaticBackupSettings, actor: Annotated[Principal, Depends(session_admin)]) -> dict[str, object]:
+        current = automatic_config()
+        if body.enabled and not body.password and not current.get("password"):
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "a password is required for automatic backups")
+        value: dict[str, object] = {"enabled": body.enabled, "interval_hours": body.interval_hours, "retention": body.retention}
+        if body.password:
+            value["password"] = secret_box.encrypt(body.password, context="automatic-backup")
+        elif current.get("password"):
+            value["password"] = current["password"]
+        settings.data_dir.mkdir(parents=True, exist_ok=True, mode=0o750)
+        temporary = automatic_config_file.with_suffix(".tmp")
+        temporary.write_text(json.dumps(value), encoding="utf-8")
+        temporary.chmod(0o600)
+        temporary.replace(automatic_config_file)
+        created = run_automatic_backup_if_due()
+        audit.append(actor.username, "maintenance.backup.automatic.configure", "system", {"enabled": body.enabled, "interval_hours": body.interval_hours, "retention": body.retention})
+        return {"status": "configured", "backup_created": created.name if created else None}
+
+    @app.get("/api/v1/maintenance/backups/{filename}")
+    def download_automatic_backup(filename: str, actor: Annotated[Principal, Depends(session_admin)]) -> FileResponse:
+        if not BACKUP_FILENAME.fullmatch(filename):
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "backup not found")
+        path = automatic_backup_dir / filename
+        if not path.is_file():
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "backup not found")
+        audit.append(actor.username, "maintenance.backup.download", f"backup:{filename}")
+        return FileResponse(path, media_type="application/octet-stream", filename=filename, headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})
 
     @app.post("/api/v1/maintenance/update/check", status_code=202)
     def request_update_check(actor: Annotated[Principal, Depends(session_admin)]) -> dict[str, str]:

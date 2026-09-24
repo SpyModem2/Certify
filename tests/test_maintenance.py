@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from certify.maintenance import BackupError, MAGIC, create_backup, restore_backup
+from certify.maintenance import BackupError, MAGIC, create_automatic_backup, create_backup, restore_backup
 from test_api import app_client
 
 
@@ -28,6 +28,19 @@ def test_encrypted_backup_round_trip_and_wrong_password(tmp_path: Path) -> None:
         assert restored.execute("SELECT id FROM users").fetchone() == (42,)
 
 
+def test_automatic_backup_is_always_encrypted_and_retained(tmp_path: Path) -> None:
+    database = tmp_path / "certify.db"
+    connection = sqlite3.connect(database)
+    for table in ("users", "audit_log", "certificates"):
+        connection.execute(f"CREATE TABLE {table}(id INTEGER)")
+    connection.close()
+    with pytest.raises(BackupError, match="require a password"):
+        create_automatic_backup(database, tmp_path / "backups", "")
+    created = create_automatic_backup(database, tmp_path / "backups", "a sufficiently long password")
+    assert created.read_bytes().startswith(MAGIC)
+    assert created.stat().st_mode & 0o777 == 0o600
+
+
 def test_admin_can_download_restore_and_request_update(tmp_path: Path) -> None:
     with app_client(tmp_path) as client:
         login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "Correct horse battery staple!7"})
@@ -42,6 +55,26 @@ def test_admin_can_download_restore_and_request_update(tmp_path: Path) -> None:
         assert update.status_code == 202
         assert (tmp_path / "update.request").is_file()
         assert client.get("/api/v1/maintenance", headers=headers).json()["update_status"] == "queued"
+
+
+def test_admin_can_configure_and_download_automatic_backup(tmp_path: Path) -> None:
+    with app_client(tmp_path) as client:
+        login = client.post("/api/v1/auth/login", json={"username": "admin", "password": "Correct horse battery staple!7"})
+        headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+        rejected = client.put("/api/v1/maintenance/backup/automatic", headers=headers, json={"enabled": True})
+        assert rejected.status_code == 422
+        configured = client.put("/api/v1/maintenance/backup/automatic", headers=headers, json={
+            "enabled": True, "interval_hours": 24, "retention": 3, "password": "automatic backup passphrase",
+        })
+        assert configured.status_code == 200
+        status = client.get("/api/v1/maintenance", headers=headers).json()
+        assert status["automatic_backup"] == {"enabled": True, "interval_hours": 24, "retention": 3}
+        assert len(status["backups"]) == 1
+        downloaded = client.get(f"/api/v1/maintenance/backups/{status['backups'][0]['name']}", headers=headers)
+        assert downloaded.status_code == 200
+        assert downloaded.content.startswith(MAGIC)
+        config = (tmp_path / "automatic-backup.json").read_text()
+        assert "automatic backup passphrase" not in config
 
 
 def test_admin_can_request_and_read_update_check(tmp_path: Path) -> None:

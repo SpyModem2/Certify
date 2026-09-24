@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import re
 import sqlite3
 import tempfile
 import zipfile
@@ -17,6 +18,7 @@ from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 
 MAGIC = b"CERTIFY-BACKUP\x01"
 MAX_BACKUP_SIZE = 100 * 1024 * 1024
+BACKUP_FILENAME = re.compile(r"^certify-auto-\d{8}-\d{6}\.certify-backup$")
 
 
 class BackupError(ValueError):
@@ -49,6 +51,27 @@ def create_backup(database_path: Path, password: str | None = None) -> tuple[byt
         return payload, False
     salt, nonce = os.urandom(16), os.urandom(12)
     return MAGIC + salt + nonce + AESGCM(_key(password, salt)).encrypt(nonce, payload, MAGIC), True
+
+
+def create_automatic_backup(database_path: Path, backup_dir: Path, password: str, *, keep: int = 14) -> Path:
+    """Atomically store an encrypted snapshot and prune the oldest snapshots."""
+    if not password:
+        raise BackupError("automatic backups require a password")
+    payload, _ = create_backup(database_path, password)
+    backup_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    filename = f"certify-auto-{datetime.now(UTC):%Y%m%d-%H%M%S}.certify-backup"
+    destination = backup_dir / filename
+    with tempfile.NamedTemporaryFile(dir=backup_dir, prefix=".backup-", delete=False) as handle:
+        temporary = Path(handle.name)
+        os.chmod(temporary, 0o600)
+        handle.write(payload)
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(temporary, destination)
+    backups = sorted((item for item in backup_dir.iterdir() if item.is_file() and BACKUP_FILENAME.fullmatch(item.name)), reverse=True)
+    for expired in backups[max(1, keep):]:
+        expired.unlink()
+    return destination
 
 
 def _decrypt(payload: bytes, password: str | None) -> bytes:
