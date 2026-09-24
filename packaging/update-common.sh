@@ -25,7 +25,11 @@ PY
 certify_update() {
   local install_source="$1"
   shift
-  local install_dir=/opt/certify active="$install_dir/venv"
+  # Declare install_dir before deriving paths from it. With `set -u` (as used
+  # by both updater entry points), expansions in a single local declaration
+  # happen before any of that declaration's assignments take effect.
+  local install_dir=/opt/certify
+  local active="$install_dir/venv"
   local candidate="$install_dir/venv.new" previous="$install_dir/venv.previous"
   local files_root="${CERTIFY_UPDATE_FILES_ROOT:-$install_source}"
   local expected_version attempt
