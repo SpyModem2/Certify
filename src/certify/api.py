@@ -335,8 +335,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if any(verify_password(body.new_password, password_hash) for password_hash in dict.fromkeys(hashes)):
                 raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "The last 20 passwords cannot be reused.")
             password_hash = hash_password(body.new_password)
+            # Preserve the value that is about to be replaced.  Older databases
+            # may not yet contain the current hash in password_history.
+            connection.execute(
+                "INSERT INTO password_history(user_id,password_hash) VALUES(?,?)",
+                (actor.id, user["password_hash"]),
+            )
             connection.execute("UPDATE users SET password_hash=? WHERE id=?", (password_hash, actor.id))
-            connection.execute("INSERT INTO password_history(user_id,password_hash) VALUES(?,?)", (actor.id, password_hash))
             connection.execute(
                 "DELETE FROM password_history WHERE user_id=? AND id NOT IN "
                 "(SELECT id FROM password_history WHERE user_id=? ORDER BY id DESC LIMIT 20)", (actor.id, actor.id)

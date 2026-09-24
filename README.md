@@ -260,6 +260,63 @@ Die Installation legt insbesondere folgende Pfade an:
 | `/etc/systemd/system/certify.service` | systemd-Unit |
 | `/usr/local/sbin/certify-configure-tls` | Werkzeug zum Wechseln des TLS-Zertifikats |
 
+## Updates
+
+Ein Update ersetzt ausschließlich die Python-Umgebung unter `/opt/certify`.
+Konfiguration, TLS-Zertifikate und die Datenbank bleiben erhalten. Die neue
+Version wird zuerst vollständig in einer separaten Umgebung installiert und
+per Import-Selbsttest geprüft. Erst danach hält das Skript den Dienst kurz an
+und schaltet die Umgebung um. Kann Certify anschließend nicht starten, wird
+automatisch die vorherige Version wiederhergestellt. Parallele Updates werden
+durch eine Sperrdatei verhindert.
+
+### Online aktualisieren
+
+Im vorhandenen Checkout den gewünschten freigegebenen Stand auswählen und den
+Updater starten:
+
+```bash
+cd Certify
+git fetch --tags --prune
+git switch --detach <VERSIONSTAG>
+sudo ./packaging/update-online.sh
+```
+
+Der Updater installiert den lokalen, gerade ausgecheckten Quellstand und lädt
+nur dessen Python-Abhängigkeiten aus dem konfigurierten Paketindex. Dadurch ist
+die zu installierende Version vor dem Start eindeutig sichtbar. Eigene lokale
+Änderungen sollte `git status` vor dem Wechsel des Tags ausschließen.
+
+### Offline aktualisieren
+
+Auf einem kompatiblen RHEL-Buildsystem mit Internetzugang wird ein vollständiges
+Paket erzeugt:
+
+```bash
+./packaging/build-wheelhouse.sh
+```
+
+Die erzeugte Datei `dist/certify-update-*.tar.gz` auf den Certify-Server
+übertragen, in ein leeres Verzeichnis entpacken und dort ausführen:
+
+```bash
+tar -xzf certify-update-*.tar.gz
+sudo ./packaging/update-offline.sh
+```
+
+Der Offline-Updater kontrolliert vorab alle Wheel-Prüfsummen und benötigt für
+Python-Pakete keinen Netzzugriff. Das Buildsystem muss dieselbe RHEL-Version,
+CPU-Architektur und Python-Version wie das Ziel haben. Release-Tags erzeugen
+zusätzlich automatisch ein versioniertes Quellarchiv, ein Anwendungs-Wheel und
+deren Prüfsummen als Release-Dateien. Das vollständige Offline-Paket wird wegen
+plattformabhängiger Abhängigkeiten weiterhin auf einem kompatiblen RHEL-System
+gebaut.
+
+Nach einem erfolgreichen Update bleibt genau eine Rückfallversion unter
+`/opt/certify/venv.previous` liegen; beim nächsten erfolgreichen Update wird sie
+ersetzt. War der Dienst vor dem Update nicht aktiv, wird er auch nicht
+ungefragt gestartet.
+
 ### Unbeaufsichtigte Installation
 
 Mit `CERTIFY_NON_INTERACTIVE=true` entfallen alle Rückfragen. Die
