@@ -169,6 +169,29 @@ def test_updaters_use_transactional_common_flow() -> None:
     assert 'mv "$previous" "$active"' in common
 
 
+def test_update_common_initializes_install_dir_with_nounset_enabled() -> None:
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f"set -u; source {UPDATE_COMMON!s}; certify_update /tmp/certify-source",
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    # The test environment has no installed Certify instance (or is not root),
+    # so the preflight is expected to reject the update. It must get that far
+    # without aborting while constructing paths from an unset local variable.
+    assert result.returncode == 1
+    assert "install_dir: unbound variable" not in result.stderr
+    assert (
+        "Keine bestehende Certify-Installation gefunden" in result.stderr
+        or "Das Update muss als root ausgefuehrt werden" in result.stderr
+    )
+
+
 def test_wheelhouse_checksums_are_portable_and_bundle_is_created() -> None:
     script = (ROOT / "packaging" / "build-wheelhouse.sh").read_text()
 
