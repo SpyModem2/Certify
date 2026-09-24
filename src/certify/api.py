@@ -126,6 +126,10 @@ class TotpConfirm(BaseModel):
     code: str = Field(pattern=r"^\d{6}$")
 
 
+class TotpSetup(BaseModel):
+    current_code: str | None = Field(default=None, pattern=r"^\d{6}$")
+
+
 class ApiKeyCreate(BaseModel):
     name: str = Field(min_length=1, max_length=128, pattern=r"^[a-zA-Z0-9_. -]+$")
     scope: Literal["read", "read_write"] = "read"
@@ -177,6 +181,7 @@ class Principal(BaseModel):
     role: str
     api_key_id: int | None = None
     api_scope: Literal["read", "read_write"] | None = None
+    password_change_required: bool = False
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -228,7 +233,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         payload = verify_token(token, settings.secret)
         if not payload:
             raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid or expired session")
-        return Principal(id=int(payload["sub"]), username=payload["username"], role=payload["role"])
+        password_change_required = bool(payload.get("password_change_required", False))
+        if password_change_required and settings.password_max_age_days is not None:
+            with database.connect() as connection:
+                password_row = connection.execute(
+                    "SELECT password_changed_at,created_at FROM users WHERE id=?", (int(payload["sub"]),)
+                ).fetchone()
+            if password_row:
+                changed_at = datetime.fromisoformat(password_row["password_changed_at"] or password_row["created_at"])
+                if changed_at.tzinfo is None:
+                    changed_at = changed_at.replace(tzinfo=UTC)
+                password_change_required = changed_at + timedelta(days=settings.password_max_age_days) <= datetime.now(UTC)
+        if password_change_required and not (
+            request.url.path == "/api/v1/users/me"
+            or (request.url.path == "/api/v1/users/me/password" and request.method == "PUT")
+        ):
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "password change required")
+        return Principal(id=int(payload["sub"]), username=payload["username"], role=payload["role"],
+                         password_change_required=password_change_required)
 
     def roles(*allowed: str):
         def dependency(user: Annotated[Principal, Depends(principal)]) -> Principal:
@@ -256,30 +278,46 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
 
     @app.post("/api/v1/auth/login")
-    def login(body: LoginRequest, request: Request) -> dict[str, str]:
+    def login(body: LoginRequest, request: Request) -> dict[str, object]:
         with database.connect() as connection:
             row = connection.execute("SELECT * FROM users WHERE username=? AND active=1", (body.username,)).fetchone()
-        valid = row is not None and verify_password(body.password, row["password_hash"])
-        valid = valid and (not row["totp_secret"] or (body.totp_code is not None and verify_totp(row["totp_secret"], body.totp_code)))
-        if not valid:
-            audit.append(body.username, "auth.login.failed", "session", {"client": request.client.host if request.client else "unknown"})
+        client = request.client.host if request.client else "unknown"
+        if row is None:
+            audit.append(body.username, "auth.login.failed", "session", {"client": client, "reason": "unknown_or_inactive_user"})
             raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid credentials")
+        if not verify_password(body.password, row["password_hash"]):
+            audit.append(body.username, "auth.login.failed", "session", {"client": client, "reason": "invalid_password"})
+            raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid credentials")
+        if row["totp_secret"] and body.totp_code is None:
+            audit.append(body.username, "auth.login.failed", "session", {"client": client, "reason": "totp_required"})
+            raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid credentials")
+        if row["totp_secret"] and not verify_totp(row["totp_secret"], body.totp_code):
+            audit.append(body.username, "auth.login.failed", "session", {"client": client, "reason": "invalid_totp"})
+            raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid credentials")
+        password_change_required = False
+        if settings.password_max_age_days is not None:
+            changed_at = datetime.fromisoformat(row["password_changed_at"] or row["created_at"])
+            if changed_at.tzinfo is None:
+                changed_at = changed_at.replace(tzinfo=UTC)
+            password_change_required = changed_at + timedelta(days=settings.password_max_age_days) <= datetime.now(UTC)
         expires = datetime.now(UTC) + timedelta(minutes=settings.session_minutes)
-        token = sign_token({"sub": row["id"], "username": row["username"], "role": row["role"], "exp": int(expires.timestamp()), "nonce": time.time_ns()}, settings.secret)
-        audit.append(row["username"], "auth.login", "session")
-        return {"access_token": token, "token_type": "bearer", "expires_at": expires.isoformat()}
+        token = sign_token({"sub": row["id"], "username": row["username"], "role": row["role"], "password_change_required": password_change_required, "exp": int(expires.timestamp()), "nonce": time.time_ns()}, settings.secret)
+        audit.append(row["username"], "auth.login", "session", {"client": client, "password_change_required": password_change_required})
+        return {"access_token": token, "token_type": "bearer", "expires_at": expires.isoformat(), "password_change_required": password_change_required}
 
     @app.get("/api/v1/users/me")
     def current_user(actor: Annotated[Principal, Depends(principal)]) -> dict[str, object]:
         with database.connect() as connection:
             row = connection.execute(
                 "SELECT id,username,first_name,last_name,role,email,notify_level,"
-                "totp_secret IS NOT NULL AS totp_enabled,created_at FROM users WHERE id=?",
+                "totp_secret IS NOT NULL AS totp_enabled,created_at,password_changed_at FROM users WHERE id=?",
                 (actor.id,),
             ).fetchone()
         if not row:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "user not found")
-        return dict(row)
+        result = dict(row)
+        result["password_change_required"] = actor.password_change_required
+        return result
 
     @app.get("/api/v1/users")
     def list_users(_: Annotated[Principal, Depends(roles("admin"))]) -> list[dict[str, object]]:
@@ -345,11 +383,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {"id": user_id, **body.model_dump()}
 
     @app.post("/api/v1/users/me/totp/setup")
-    def setup_totp(actor: Annotated[Principal, Depends(principal)]) -> dict[str, str]:
+    def setup_totp(
+        actor: Annotated[Principal, Depends(principal)], body: TotpSetup = TotpSetup()
+    ) -> dict[str, str]:
         if actor.api_key_id is not None:
             raise HTTPException(status.HTTP_403_FORBIDDEN, "TOTP setup requires a user session")
-        secret = new_totp_secret()
         with database.connect() as connection:
+            user = connection.execute("SELECT totp_secret FROM users WHERE id=?", (actor.id,)).fetchone()
+            if user and user["totp_secret"] and (
+                body.current_code is None or not verify_totp(user["totp_secret"], body.current_code)
+            ):
+                audit.append(actor.username, "user.totp.setup.failed", f"user:{actor.id}", {"reason": "invalid_current_totp"})
+                raise HTTPException(status.HTTP_401_UNAUTHORIZED, "current TOTP code is incorrect")
+            secret = new_totp_secret()
             connection.execute("UPDATE users SET totp_pending_secret=? WHERE id=?", (secret, actor.id))
         label = quote(f"Certify:{actor.username}", safe="")
         uri = f"otpauth://totp/{label}?secret={secret}&issuer=Certify&digits=6&period=30"
@@ -417,7 +463,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "INSERT INTO password_history(user_id,password_hash) VALUES(?,?)",
                 (actor.id, user["password_hash"]),
             )
-            connection.execute("UPDATE users SET password_hash=? WHERE id=?", (password_hash, actor.id))
+            connection.execute(
+                "UPDATE users SET password_hash=?,password_changed_at=CURRENT_TIMESTAMP WHERE id=?",
+                (password_hash, actor.id),
+            )
             connection.execute(
                 "DELETE FROM password_history WHERE user_id=? AND id NOT IN "
                 "(SELECT id FROM password_history WHERE user_id=? ORDER BY id DESC LIMIT 20)", (actor.id, actor.id)
