@@ -13,7 +13,9 @@ manipulationserkennbare Audit-Kette in einer zweisprachigen Webanwendung.
 ## Funktionen
 
 - lokale Benutzerkonten mit `scrypt`-Passworthashes, verbindlicher Kennwortkomplexität,
-  Sperre der letzten 20 Kennwörter und optionaler TOTP-MFA
+  Sperre der letzten 20 Kennwörter und optionaler TOTP-MFA per QR-Code
+- Pflege des eigenen Namens und der E-Mail-Adresse sowie administrative Bearbeitung
+  von Namen, E-Mail-Adresse, Rolle, Kontostatus und TOTP-Einstellungen
 - persönliche, widerrufbare API-Keys, die niemals mehr Rechte als ihr Benutzer haben
   und auf reinen Lesezugriff eingeschränkt werden können
 - Rollen `admin`, `operator` und `auditor`
@@ -30,6 +32,22 @@ manipulationserkennbare Audit-Kette in einer zweisprachigen Webanwendung.
 
 Details zu Architektur, Sicherheitsgrenzen und Erweiterungspunkten stehen in
 [`docs/architecture.md`](docs/architecture.md).
+
+## Einzeilige Online-Installation
+
+Auf einem frisch bereitgestellten RHEL-10-System startet dieser Befehl die
+vollständige interaktive Installation (Root-Rechte, `dnf`, erreichbare
+Paketquellen und Internetzugang werden vorausgesetzt):
+
+```bash
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/SpyModem2/Certify/main/install.sh)"
+```
+
+Der Befehl lädt den Bootstrap-Installer vom Branch `main` vollständig, bevor er
+ihn startet. Dadurch bleibt die Standardeingabe mit dem Terminal verbunden und
+der interaktive Konfigurationsdialog kann Eingaben lesen. Hinweise zur Prüfung
+des Skripts, zur Installation eines anderen Branches oder Tags sowie zur
+Offline-Installation stehen unter [Installation auf RHEL 10](#installation-auf-rhel-10).
 
 ## Schnellstart für die Entwicklung
 
@@ -59,6 +77,14 @@ Audit-Verifikation und Kontosicherheit. Sie wird ohne externes CDN direkt vom
 Certify-Dienst ausgeliefert und benötigt keinen separaten Frontend-Build. Neue
 Funktionsbereiche können über die zentrale Seitenregistrierung in
 `src/certify/web/assets/app.js` ergänzt werden.
+
+Benutzer können ihren Vor- und Nachnamen sowie ihre E-Mail-Adresse unter
+„Konto & Sicherheit“ selbst pflegen. Administratoren können in der
+Benutzerverwaltung Namen, E-Mail-Adresse, Rolle und Kontostatus bearbeiten und
+eine bestehende TOTP-Konfiguration entfernen. Bei der TOTP-Einrichtung wird ein
+QR-Code für Authenticator-Apps angezeigt; erst die erfolgreiche Bestätigung mit
+einem sechsstelligen Code aktiviert TOTP. Ein abgebrochener Einrichtungsversuch
+verwirft das noch unbestätigte TOTP-Geheimnis.
 
 ## Kennwort- und API-Key-Sicherheit
 
@@ -117,27 +143,28 @@ folgende Voraussetzungen hinzu:
 
 ### Online-Installation
 
-#### Installation mit einem Copy-Paste-Befehl
+#### Installation mit dem Ein-Zeilen-Befehl
 
 Auf einem frisch bereitgestellten RHEL-10-Zielserver kann die vollständige
 Online-Erstinstallation direkt aus diesem Repository gestartet werden:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/SpyModem2/Certify/main/install.sh | sudo bash
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/SpyModem2/Certify/main/install.sh)"
 ```
 
 Der Bootstrap-Installer installiert Git und CA-Zertifikate, lädt den Branch
-`main` in ein temporaeres Verzeichnis und startet anschließend den vorhandenen
-interaktiven Online-Installer. Das temporaere Checkout wird am Ende wieder
-entfernt. Der Konfigurationsdialog bleibt auch beim Aufruf ueber die Pipe mit
-dem Terminal verbunden.
+`main` in ein temporäres Verzeichnis und startet anschließend den vorhandenen
+interaktiven Online-Installer. Das temporäre Checkout wird am Ende wieder
+entfernt. Das Skript wird bewusst nicht direkt an `bash` weitergeleitet: Es wird
+zuerst vollständig geladen, damit der anschließende Konfigurationsdialog seine
+Eingaben weiterhin vom Terminal lesen kann.
 
 Soll gezielt ein anderer Branch oder ein Release-Tag installiert werden, kann
 dessen Name als Argument angegeben werden (nur vertrauenswürdige Refs
 verwenden):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/SpyModem2/Certify/main/install.sh | sudo bash -s -- <BRANCH-ODER-TAG>
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/SpyModem2/Certify/main/install.sh)" -- <BRANCH-ODER-TAG>
 ```
 
 Vor dem Ausführen eines aus dem Internet geladenen Skripts empfiehlt es sich,
