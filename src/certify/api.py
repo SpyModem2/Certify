@@ -23,6 +23,7 @@ import qrcode
 import qrcode.image.svg
 from pydantic import BaseModel, Field, field_validator
 
+from . import __version__
 from .audit import AuditLog
 from .config import Settings
 from .database import Database
@@ -165,7 +166,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         database.initialize()
         yield
 
-    app = FastAPI(title="Certify", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(title="Certify", version=__version__, lifespan=lifespan)
     app.state.database = database
     app.state.audit = audit
     app.state.settings = settings
@@ -214,7 +215,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/health")
     def health() -> dict[str, str]:
-        return {"status": "ok"}
+        # The updater uses this unauthenticated endpoint to verify the running
+        # process, rather than merely checking that systemd managed to fork it.
+        return {"status": "ok", "version": __version__}
 
     @app.get("/", response_class=FileResponse)
     def index() -> FileResponse:

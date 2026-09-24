@@ -1,27 +1,47 @@
 #!/usr/bin/env bash
 # Transactional update helpers shared by the online and offline updater.
 
+certify_healthcheck() {
+  local python="$1" expected_version="$2" host
+  host="$(sed -n 's/^CERTIFY_TRUSTED_HOSTS=//p' /etc/certify/certify.conf | head -n1 | cut -d, -f1)"
+  host="${host:-localhost}"
+  "$python" - "$host" "$expected_version" <<'PY'
+import http.client
+import json
+import ssl
+import sys
+
+host, expected = sys.argv[1:]
+connection = http.client.HTTPSConnection("127.0.0.1", 443, timeout=3,
+    context=ssl._create_unverified_context())
+connection.request("GET", "/health", headers={"Host": host})
+response = connection.getresponse()
+payload = json.loads(response.read())
+if response.status != 200 or payload != {"status": "ok", "version": expected}:
+    raise SystemExit(f"Unerwartete Health-Antwort ({response.status}): {payload!r}")
+PY
+}
+
 certify_update() {
   local install_source="$1"
   shift
-  local install_dir=/opt/certify
-  local active="$install_dir/venv"
-  local candidate="$install_dir/venv.new"
-  local previous="$install_dir/venv.previous"
-  local was_active=false
+  local install_dir=/opt/certify active="$install_dir/venv"
+  local candidate="$install_dir/venv.new" previous="$install_dir/venv.previous"
+  local files_root="${CERTIFY_UPDATE_FILES_ROOT:-$install_source}"
+  local expected_version attempt
 
   [[ ${EUID} -eq 0 ]] || { echo "Das Update muss als root ausgefuehrt werden." >&2; return 1; }
   [[ -x "$active/bin/certify" && -f /etc/certify/certify.conf ]] || {
-    echo "Keine bestehende Certify-Installation gefunden. Bitte zuerst den Installer ausfuehren." >&2
-    return 1
+    echo "Keine bestehende Certify-Installation gefunden. Bitte zuerst den Installer ausfuehren." >&2; return 1;
   }
-  command -v python3 >/dev/null || { echo "python3 wurde nicht gefunden." >&2; return 1; }
+  for command in python3 flock systemctl install; do
+    command -v "$command" >/dev/null || { echo "${command} wurde nicht gefunden." >&2; return 1; }
+  done
 
-  # Do not allow two administrators or automation jobs to update concurrently.
   exec 9>"$install_dir/update.lock"
   flock -n 9 || { echo "Ein anderes Certify-Update laeuft bereits." >&2; return 1; }
 
-  echo "[1/4] Neue Version in einer separaten Umgebung vorbereiten ..."
+  echo "[2/6] Neue Version in einer separaten Umgebung vorbereiten ..."
   rm -rf "$candidate"
   python3 -m venv "$candidate"
   if ! "$candidate/bin/pip" install "$@" "$install_source"; then
@@ -29,35 +49,52 @@ certify_update() {
     echo "Update konnte nicht vorbereitet werden; die laufende Version blieb unveraendert." >&2
     return 1
   fi
-  if ! "$candidate/bin/python" -c 'import certify; from certify.api import create_app; from certify.cli import main' >/dev/null; then
+  if ! expected_version="$("$candidate/bin/python" -c 'import certify; from importlib.metadata import version; from certify.api import create_app; from certify.cli import main; installed = version("certify-server"); assert certify.__version__ == installed; print(installed)')"; then
     rm -rf "$candidate"
     echo "Die neue Version hat den Selbsttest nicht bestanden; die laufende Version blieb unveraendert." >&2
     return 1
   fi
 
-  echo "[2/4] Dienst kurz anhalten und Version umschalten ..."
-  if systemctl is-active --quiet certify; then
-    was_active=true
-    systemctl stop certify
-  fi
+  echo "[3/6] Systemdateien installieren und Python-Umgebung umschalten ..."
+  cp -a /etc/systemd/system/certify.service "$install_dir/certify.service.previous"
+  cp -a /usr/local/sbin/certify-configure-tls "$install_dir/configure-tls.previous"
+  install -m 0644 "$files_root/packaging/certify.service" /etc/systemd/system/certify.service
+  install -m 0755 "$files_root/packaging/configure-tls.sh" /usr/local/sbin/certify-configure-tls
+  systemctl stop certify || true
   rm -rf "$previous"
   mv "$active" "$previous"
   mv "$candidate" "$active"
 
-  echo "[3/4] Certify starten und Installation pruefen ..."
+  echo "[4/6] systemd neu laden und Certify vollstaendig neu starten ..."
   systemctl daemon-reload
-  if [[ "$was_active" == true ]]; then
-    if ! systemctl restart certify || ! systemctl is-active --quiet certify; then
-      echo "Die neue Version startet nicht. Vorherige Version wird wiederhergestellt." >&2
-      rm -rf "$candidate"
-      mv "$active" "$candidate"
-      mv "$previous" "$active"
-      systemctl restart certify || true
-      rm -rf "$candidate"
-      return 1
-    fi
+  if ! systemctl restart certify; then
+    attempt=0
+  else
+    attempt=1
   fi
 
-  echo "[4/4] Update abgeschlossen. Die vorherige Version liegt unter ${previous}."
-  echo "Konfiguration, TLS-Schluessel und Daten wurden nicht veraendert."
+  echo "[5/6] Dienststatus und laufende Version ${expected_version} pruefen ..."
+  while (( attempt > 0 && attempt <= 30 )); do
+    if systemctl is-active --quiet certify && certify_healthcheck "$active/bin/python" "$expected_version" >/dev/null 2>&1; then
+      rm -f "$install_dir/certify.service.previous"
+      rm -f "$install_dir/configure-tls.previous"
+      echo "[6/6] Update auf Certify ${expected_version} erfolgreich abgeschlossen."
+      echo "Die vorherige Python-Umgebung liegt unter ${previous}."
+      return 0
+    fi
+    sleep 1
+    ((attempt++))
+  done
+
+  echo "Die neue Version wurde nicht gesund gestartet. Vorherige Version wird wiederhergestellt." >&2
+  systemctl stop certify || true
+  rm -rf "$candidate"
+  mv "$active" "$candidate"
+  mv "$previous" "$active"
+  mv "$install_dir/certify.service.previous" /etc/systemd/system/certify.service
+  mv "$install_dir/configure-tls.previous" /usr/local/sbin/certify-configure-tls
+  systemctl daemon-reload
+  systemctl restart certify || true
+  rm -rf "$candidate"
+  return 1
 }
