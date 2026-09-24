@@ -29,7 +29,7 @@ from .config import Settings
 from .database import Database
 from .mailer import send_local_mail
 from .maintenance import BackupError, MAX_BACKUP_SIZE, create_backup, restore_backup
-from .providers import validate_acme_directory
+from .providers import test_acme_connection, validate_acme_directory
 from .security import PASSWORD_POLICY, hash_password, new_totp_secret, sign_token, validate_password, verify_password, verify_token, verify_totp
 from .secrets import SecretBox
 
@@ -155,6 +155,27 @@ class CaAccountCreate(BaseModel):
     terms_url: str | None = None
     terms_accepted: bool
     enabled: bool = True
+
+    @field_validator("email")
+    @classmethod
+    def valid_email(cls, value: str) -> str:
+        return EmailChange(email=value).email
+
+    @field_validator("directory_url", "terms_url")
+    @classmethod
+    def valid_urls(cls, value: str | None) -> str | None:
+        if value is not None:
+            validate_acme_directory(value)
+        return value
+
+
+class CaAccountUpdate(BaseModel):
+    name: str = Field(min_length=1, max_length=128)
+    provider: Literal["letsencrypt", "custom"]
+    directory_url: str
+    email: str = Field(min_length=3, max_length=320)
+    terms_url: str | None = None
+    terms_accepted: bool
 
     @field_validator("email")
     @classmethod
@@ -647,6 +668,61 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "active CA account not found")
         audit.append(actor.username, "ca_account.disable", f"ca_account:{account_id}")
         return Response(status_code=204)
+
+    @app.put("/api/v1/ca-accounts/{account_id}")
+    def update_ca_account(account_id: int, body: CaAccountUpdate, actor: Annotated[Principal, Depends(roles("admin"))]) -> dict[str, object]:
+        if not body.terms_accepted:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "the CA terms must be accepted")
+        try:
+            with database.connect() as connection:
+                result = connection.execute(
+                    "UPDATE ca_accounts SET name=?,provider=?,directory_url=?,email=?,terms_url=?,"
+                    "terms_accepted_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                    (body.name.strip(), body.provider, body.directory_url, body.email, body.terms_url, account_id),
+                )
+                row = connection.execute(
+                    "SELECT id,name,provider,directory_url,email,terms_url,terms_accepted_at,enabled,created_at,updated_at FROM ca_accounts WHERE id=?",
+                    (account_id,),
+                ).fetchone()
+        except Exception as error:
+            if "UNIQUE constraint" in str(error):
+                raise HTTPException(status.HTTP_409_CONFLICT, "CA account name already exists") from error
+            raise
+        if not result.rowcount:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "CA account not found")
+        audit.append(actor.username, "ca_account.update", f"ca_account:{account_id}", {"name": body.name, "provider": body.provider})
+        return dict(row)
+
+    @app.post("/api/v1/ca-accounts/{account_id}/enable")
+    def enable_ca_account(account_id: int, actor: Annotated[Principal, Depends(roles("admin"))]) -> dict[str, object]:
+        with database.connect() as connection:
+            result = connection.execute(
+                "UPDATE ca_accounts SET enabled=1,updated_at=CURRENT_TIMESTAMP WHERE id=? AND enabled=0", (account_id,)
+            )
+            row = connection.execute(
+                "SELECT id,name,provider,directory_url,email,terms_url,terms_accepted_at,enabled,created_at,updated_at FROM ca_accounts WHERE id=?",
+                (account_id,),
+            ).fetchone()
+        if not row:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "CA account not found")
+        if not result.rowcount:
+            raise HTTPException(status.HTTP_409_CONFLICT, "CA account is already active")
+        audit.append(actor.username, "ca_account.enable", f"ca_account:{account_id}")
+        return dict(row)
+
+    @app.post("/api/v1/ca-accounts/{account_id}/test")
+    def test_ca_account(account_id: int, actor: Annotated[Principal, Depends(roles("admin"))]) -> dict[str, object]:
+        with database.connect() as connection:
+            row = connection.execute("SELECT directory_url FROM ca_accounts WHERE id=?", (account_id,)).fetchone()
+        if not row:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "CA account not found")
+        try:
+            result = test_acme_connection(row["directory_url"])
+        except Exception as error:
+            audit.append(actor.username, "ca_account.test.failed", f"ca_account:{account_id}", {"error": str(error)[:500]})
+            raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"CA connection test failed: {error}") from error
+        audit.append(actor.username, "ca_account.test", f"ca_account:{account_id}")
+        return result
 
     @app.get("/api/v1/certificates/{certificate_id}/download")
     def download_certificate(certificate_id: int, actor: Annotated[Principal, Depends(roles("admin", "operator"))], include_key: bool = False) -> Response:
