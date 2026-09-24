@@ -148,7 +148,7 @@ Auf einem frisch bereitgestellten RHEL-10-Zielserver kann die vollständige
 Online-Erstinstallation direkt aus diesem Repository gestartet werden:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/SpyModem2/Certify/main/install.sh | sudo bash
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/SpyModem2/Certify/main/install.sh)"
 ```
 
 Der Bootstrap-Installer installiert Git und CA-Zertifikate, lädt den Branch
@@ -162,7 +162,7 @@ dessen Name als Argument angegeben werden (nur vertrauenswürdige Refs
 verwenden):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/SpyModem2/Certify/main/install.sh | sudo bash -s -- <BRANCH-ODER-TAG>
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/SpyModem2/Certify/main/install.sh)" -- <BRANCH-ODER-TAG>
 ```
 
 Vor dem Ausführen eines aus dem Internet geladenen Skripts empfiehlt es sich,
