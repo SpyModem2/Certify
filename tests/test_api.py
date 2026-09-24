@@ -46,7 +46,7 @@ def test_login_and_certificate_request(tmp_path: Path) -> None:
 
 def test_health_and_localized_page(tmp_path: Path) -> None:
     with app_client(tmp_path) as client:
-        assert client.get("/health").json() == {"status": "ok"}
+        assert client.get("/health").json() == {"status": "ok", "version": "0.1.0"}
         page = client.get("/", headers={"Accept-Language": "de"})
         assert "Zertifikatsverwaltung" in page.text
         assert "default-src 'self'" in page.headers["content-security-policy"]

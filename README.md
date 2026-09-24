@@ -262,8 +262,9 @@ Die Installation legt insbesondere folgende Pfade an:
 
 ## Updates
 
-Ein Update ersetzt ausschließlich die Python-Umgebung unter `/opt/certify`.
-Konfiguration, TLS-Zertifikate und die Datenbank bleiben erhalten. Die neue
+Ein Update ersetzt die Python-Umgebung unter `/opt/certify` und aktualisiert
+auch die systemd-Unit sowie das TLS-Hilfsprogramm. Konfiguration,
+TLS-Zertifikate und die Datenbank bleiben erhalten. Die neue
 Version wird zuerst vollständig in einer separaten Umgebung installiert und
 per Import-Selbsttest geprüft. Erst danach hält das Skript den Dienst kurz an
 und schaltet die Umgebung um. Kann Certify anschließend nicht starten, wird
@@ -272,20 +273,25 @@ durch eine Sperrdatei verhindert.
 
 ### Online aktualisieren
 
-Im vorhandenen Checkout den gewünschten freigegebenen Stand auswählen und den
-Updater starten:
+Im vorhandenen, sauberen Git-Checkout genügt der Aufruf des Updaters:
 
 ```bash
 cd Certify
-git fetch --tags --prune
-git switch --detach <VERSIONSTAG>
 sudo ./packaging/update-online.sh
 ```
 
-Der Updater installiert den lokalen, gerade ausgecheckten Quellstand und lädt
-nur dessen Python-Abhängigkeiten aus dem konfigurierten Paketindex. Dadurch ist
-die zu installierende Version vor dem Start eindeutig sichtbar. Eigene lokale
-Änderungen sollte `git status` vor dem Wechsel des Tags ausschließen.
+Der Updater bricht bei lokalen Änderungen sicher ab, holt Branch und Tags von
+`origin` und aktualisiert den aktuellen Branch ausschließlich per Fast-Forward.
+Für einen bestimmten Release-Tag kann beispielsweise
+`CERTIFY_UPDATE_REF=v0.2.0 sudo -E ./packaging/update-online.sh` verwendet werden;
+ein Rücksprung oder divergierender Stand wird ebenfalls abgelehnt. Ein anderer
+Remote lässt sich mit `CERTIFY_UPDATE_REMOTE` wählen.
+
+Danach baut das Skript zunächst eine separate Python-Umgebung auf, installiert
+die mitgelieferten Systemdateien, lädt systemd neu und startet Certify immer
+neu. Es wartet bis zu 30 Sekunden auf `/health` und vergleicht dort die laufende
+Version mit der soeben installierten Version. Bei einem Fehler werden Umgebung
+und systemd-Unit automatisch zurückgerollt und der vorherige Dienst gestartet.
 
 ### Offline aktualisieren
 
@@ -314,8 +320,8 @@ gebaut.
 
 Nach einem erfolgreichen Update bleibt genau eine Rückfallversion unter
 `/opt/certify/venv.previous` liegen; beim nächsten erfolgreichen Update wird sie
-ersetzt. War der Dienst vor dem Update nicht aktiv, wird er auch nicht
-ungefragt gestartet.
+ersetzt. Der Dienst läuft nach einem erfolgreichen Update geprüft auf der neuen
+Version.
 
 ### Unbeaufsichtigte Installation
 

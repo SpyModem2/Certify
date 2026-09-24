@@ -13,4 +13,4 @@ echo "Pruefe das Offline-Paket ..."
 shopt -s nullglob
 wheels=("$root"/dist/certify_server-*.whl)
 [[ ${#wheels[@]} -eq 1 ]] || { echo "Genau ein Certify-Wheel in dist/ erwartet." >&2; exit 1; }
-certify_update "${wheels[0]}" --no-index --find-links "$root/wheelhouse"
+CERTIFY_UPDATE_FILES_ROOT="$root" certify_update "${wheels[0]}" --no-index --find-links "$root/wheelhouse"

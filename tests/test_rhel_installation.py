@@ -142,6 +142,9 @@ def test_updaters_use_transactional_common_flow() -> None:
     common = UPDATE_COMMON.read_text()
 
     assert 'certify_update "$root"' in online
+    assert "fetch --tags --prune" in online
+    assert "merge --ff-only" in online
+    assert "--sources-updated" in online
     assert "sha256sum --check dist/SHA256SUMS" in offline
     assert "venv.new" in common
     assert "venv.previous" in common
@@ -149,6 +152,8 @@ def test_updaters_use_transactional_common_flow() -> None:
     assert "from certify.api import app" not in common
     assert common.index('pip" install') < common.index("systemctl stop certify")
     assert "systemctl is-active --quiet certify" in common
+    assert '"version": expected' in common
+    assert 'systemctl restart certify' in common
     assert 'mv "$previous" "$active"' in common
 
 
