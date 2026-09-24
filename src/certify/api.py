@@ -28,6 +28,7 @@ from .audit import AuditLog
 from .config import Settings
 from .database import Database
 from .mailer import send_local_mail
+from .maintenance import BackupError, MAX_BACKUP_SIZE, create_backup, restore_backup
 from .providers import validate_acme_directory
 from .security import PASSWORD_POLICY, hash_password, new_totp_secret, sign_token, validate_password, verify_password, verify_token, verify_totp
 from .secrets import SecretBox
@@ -198,6 +199,14 @@ class Notification(BaseModel):
     message: str = Field(min_length=1, max_length=10000)
 
 
+class BackupRequest(BaseModel):
+    password: str | None = Field(default=None, min_length=12, max_length=1024)
+
+
+class RestoreRequest(BackupRequest):
+    data: str = Field(min_length=1)
+
+
 class Principal(BaseModel):
     id: int
     username: str
@@ -281,6 +290,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 raise HTTPException(status.HTTP_403_FORBIDDEN, "insufficient role")
             return user
         return dependency
+
+    def session_admin(actor: Annotated[Principal, Depends(roles("admin"))]) -> Principal:
+        if actor.api_key_id is not None:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "interactive administrator session required")
+        return actor
 
     @app.get("/health")
     def health() -> dict[str, str]:
@@ -804,5 +818,56 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 (limit,),
             ).fetchall()
         return [{**dict(row), "details": json.loads(row["details"])} for row in rows]
+
+    @app.get("/api/v1/maintenance")
+    def maintenance_status(_: Annotated[Principal, Depends(session_admin)]) -> dict[str, object]:
+        result: dict[str, object] = {"version": __version__, "update_status": "idle"}
+        status_file = settings.data_dir / "update-status.json"
+        if status_file.exists():
+            try:
+                value = json.loads(status_file.read_text(encoding="utf-8"))
+                if isinstance(value, dict):
+                    result.update(value)
+            except (OSError, json.JSONDecodeError):
+                result["update_status"] = "unknown"
+        if (settings.data_dir / "update.request").exists():
+            result["update_status"] = "queued"
+        return result
+
+    @app.post("/api/v1/maintenance/backup")
+    def download_backup(body: BackupRequest, actor: Annotated[Principal, Depends(session_admin)]) -> Response:
+        payload, encrypted = create_backup(database.path, body.password)
+        audit.append(actor.username, "maintenance.backup.create", "system", {"encrypted": encrypted})
+        stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+        suffix = "certify-backup" if encrypted else "zip"
+        return Response(payload, media_type="application/octet-stream", headers={
+            "Content-Disposition": f'attachment; filename="certify-{stamp}.{suffix}"',
+            "X-Content-Type-Options": "nosniff",
+        })
+
+    @app.post("/api/v1/maintenance/restore")
+    def upload_backup(body: RestoreRequest, actor: Annotated[Principal, Depends(session_admin)]) -> dict[str, str]:
+        try:
+            payload = base64.b64decode(body.data, validate=True)
+            if len(payload) > MAX_BACKUP_SIZE:
+                raise BackupError("backup exceeds the 100 MiB limit")
+            restore_backup(database.path, payload, body.password)
+            database.initialize()
+        except (ValueError, BackupError) as error:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(error)) from error
+        audit.append(actor.username, "maintenance.backup.restore", "system")
+        return {"status": "restored"}
+
+    @app.post("/api/v1/maintenance/update", status_code=202)
+    def request_update(actor: Annotated[Principal, Depends(session_admin)]) -> dict[str, str]:
+        request_file = settings.data_dir / "update.request"
+        if request_file.exists():
+            raise HTTPException(status.HTTP_409_CONFLICT, "an update is already queued")
+        audit.append(actor.username, "maintenance.update.request", "system")
+        temporary = request_file.with_suffix(".tmp")
+        temporary.write_text(json.dumps({"requested_at": datetime.now(UTC).isoformat(), "actor": actor.username}), encoding="utf-8")
+        temporary.chmod(0o600)
+        temporary.replace(request_file)
+        return {"status": "queued"}
 
     return app

@@ -1,0 +1,12 @@
+[Unit]
+Description=Install an update requested through Certify
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/certify-web-update
+User=root
+Group=root
+PrivateTmp=yes
+ProtectHome=yes
