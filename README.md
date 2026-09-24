@@ -40,7 +40,7 @@ vollständige interaktive Installation (Root-Rechte, `dnf`, erreichbare
 Paketquellen und Internetzugang werden vorausgesetzt):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/SpyModem2/Certify/main/install.sh | sudo bash
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/SpyModem2/Certify/main/install.sh)"
 ```
 
 Der Befehl lädt den Bootstrap-Installer vom Branch `main`. Hinweise zur Prüfung
