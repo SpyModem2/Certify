@@ -98,6 +98,30 @@ class EmailChange(BaseModel):
         return value
 
 
+class NameChange(BaseModel):
+    first_name: str = Field(min_length=1, max_length=128)
+    last_name: str = Field(min_length=1, max_length=128)
+
+    @field_validator("first_name", "last_name")
+    @classmethod
+    def non_empty_names(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("field must not be empty")
+        return value
+
+
+class UserUpdate(NameChange):
+    email: str | None = Field(default=None, max_length=320)
+    role: Literal["admin", "operator", "auditor"]
+    active: bool
+
+    @field_validator("email")
+    @classmethod
+    def valid_email(cls, value: str | None) -> str | None:
+        return EmailChange(email=value).email if value is not None else None
+
+
 class TotpConfirm(BaseModel):
     code: str = Field(pattern=r"^\d{6}$")
 
@@ -290,6 +314,35 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             connection.execute("UPDATE users SET email=? WHERE id=?", (body.email, actor.id))
         audit.append(actor.username, "user.email.change", f"user:{actor.id}")
         return {"email": body.email}
+
+    @app.put("/api/v1/users/me/name")
+    def change_name(body: NameChange, actor: Annotated[Principal, Depends(principal)]) -> dict[str, str]:
+        with database.connect() as connection:
+            connection.execute(
+                "UPDATE users SET first_name=?,last_name=? WHERE id=?",
+                (body.first_name, body.last_name, actor.id),
+            )
+        audit.append(actor.username, "user.name.change", f"user:{actor.id}")
+        return {"first_name": body.first_name, "last_name": body.last_name}
+
+    @app.put("/api/v1/users/{user_id}")
+    def update_user(
+        user_id: int, body: UserUpdate, actor: Annotated[Principal, Depends(roles("admin"))]
+    ) -> dict[str, object]:
+        with database.connect() as connection:
+            result = connection.execute(
+                "UPDATE users SET first_name=?,last_name=?,email=?,role=?,active=? WHERE id=?",
+                (body.first_name, body.last_name, body.email, body.role, int(body.active), user_id),
+            )
+        if not result.rowcount:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "user not found")
+        audit.append(
+            actor.username,
+            "user.update",
+            f"user:{user_id}",
+            {"role": body.role, "active": body.active},
+        )
+        return {"id": user_id, **body.model_dump()}
 
     @app.post("/api/v1/users/me/totp/setup")
     def setup_totp(actor: Annotated[Principal, Depends(principal)]) -> dict[str, str]:
