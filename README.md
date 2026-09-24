@@ -29,6 +29,9 @@ manipulationserkennbare Audit-Kette in einer zweisprachigen Webanwendung.
 - Systeminventar und explizite Zertifikat-System-Zuordnung; Zugangsdaten werden AEAD-verschlüsselt
 - wählbare E-Mail-Benachrichtigungsstufen über einen lokalen SMTP-Relay
 - append-only Audit-Log mit HMAC-verketteten Einträgen und Verifikation
+- administrative Online-Updates sowie konsistente Backups und Wiederherstellung
+  über die Weboberfläche; Backups können kennwortbasiert mit AES-256-GCM
+  verschlüsselt werden
 - Deutsch und Englisch über den `Accept-Language`-Header
 - SQLite im Einzelknotenbetrieb; keine Redis-, Celery- oder Docker-Abhängigkeit
 - systemd-Unit und Offline-Wheelhouse-Installationsskript für RHEL 10
@@ -78,6 +81,16 @@ Audit-Verifikation und Kontosicherheit. Sie wird ohne externes CDN direkt vom
 Certify-Dienst ausgeliefert und benötigt keinen separaten Frontend-Build. Neue
 Funktionsbereiche können über die zentrale Seitenregistrierung in
 `src/certify/web/assets/app.js` ergänzt werden.
+
+Administratoren finden unter „Updates & Backups“ die Systemwartung. Ein Backup
+enthält einen konsistenten SQLite-Snapshot und kann vor dem Download mit einem
+Kennwort verschlüsselt werden. Bei einer Wiederherstellung prüft Certify Archiv
+und Datenbank und legt vor dem Austausch automatisch einen lokalen
+Sicherheits-Snapshot an. Online-Updates werden nicht mit den Rechten des
+Webdienstes ausgeführt: Die Webanwendung legt nur eine Update-Anforderung ab,
+die der bei der Installation aktivierte systemd-Pfaddienst privilegiert
+verarbeitet. Installationen aus einem Offline-Paket benötigen weiterhin ein
+neues geprüftes Offline-Paket und `update-offline.sh`.
 
 Benutzer können ihren Vor- und Nachnamen sowie ihre E-Mail-Adresse unter
 „Konto & Sicherheit“ selbst pflegen. Administratoren können in der

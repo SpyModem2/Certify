@@ -1,0 +1,9 @@
+[Unit]
+Description=Watch for Certify web update requests
+
+[Path]
+PathExists=@CERTIFY_DATA_DIR@/update.request
+Unit=certify-update.service
+
+[Install]
+WantedBy=multi-user.target

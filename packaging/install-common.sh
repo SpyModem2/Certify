@@ -107,7 +107,9 @@ configure_selinux() {
   # /var. Port 443 is part of the RHEL http_port_t policy and therefore needs
   # no local, difficult-to-maintain SELinux port override.
   restorecon -RF /etc/certify /opt/certify /var/lib/certify \
-    /etc/systemd/system/certify.service /usr/local/sbin/certify-configure-tls
+    /etc/systemd/system/certify.service /etc/systemd/system/certify-update.service \
+    /etc/systemd/system/certify-update.path /usr/local/sbin/certify-configure-tls \
+    /usr/local/sbin/certify-web-update
   echo "SELinux-Dateikontexte fuer Certify wurden wiederhergestellt (${state})."
 }
 
@@ -239,9 +241,28 @@ finish_install() {
   configure_certify
   configure_tls "$root"
   install -m 0644 "$root/packaging/certify.service" /etc/systemd/system/certify.service
+  install -m 0644 "$root/packaging/certify-update.service" /etc/systemd/system/certify-update.service
+  local maintenance_data_dir
+  maintenance_data_dir="$(sed -n 's/^CERTIFY_DATA_DIR=//p' /etc/certify/certify.conf | head -n1)"
+  sed "s|@CERTIFY_DATA_DIR@|${maintenance_data_dir:-/var/lib/certify}|g" \
+    "$root/packaging/certify-update.path" >/etc/systemd/system/certify-update.path
+  chmod 0644 /etc/systemd/system/certify-update.path
+  install -m 0755 "$root/packaging/web-update.sh" /usr/local/sbin/certify-web-update
+  rm -f /etc/certify/update-source
+  if [[ -d "$root/.git" ]] && command -v git >/dev/null; then
+    rm -rf /opt/certify/update-source
+    git clone --no-hardlinks "$root" /opt/certify/update-source
+    if remote_url="$(git -C "$root" remote get-url origin 2>/dev/null)"; then
+      git -C /opt/certify/update-source remote set-url origin "$remote_url"
+    fi
+    chown -R root:root /opt/certify/update-source
+    printf '%s\n' /opt/certify/update-source >/etc/certify/update-source
+    chmod 0644 /etc/certify/update-source
+  fi
   configure_firewall "$CERTIFY_SELECTED_TLS_MODE"
   configure_selinux
   systemctl daemon-reload
+  systemctl enable --now certify-update.path
 
   if [[ "${CERTIFY_NON_INTERACTIVE:-false}" != "true" && -t 0 ]]; then
     echo

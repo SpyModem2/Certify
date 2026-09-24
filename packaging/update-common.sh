@@ -60,6 +60,13 @@ certify_update() {
   cp -a /usr/local/sbin/certify-configure-tls "$install_dir/configure-tls.previous"
   install -m 0644 "$files_root/packaging/certify.service" /etc/systemd/system/certify.service
   install -m 0755 "$files_root/packaging/configure-tls.sh" /usr/local/sbin/certify-configure-tls
+  install -m 0644 "$files_root/packaging/certify-update.service" /etc/systemd/system/certify-update.service
+  local maintenance_data_dir
+  maintenance_data_dir="$(sed -n 's/^CERTIFY_DATA_DIR=//p' /etc/certify/certify.conf | head -n1)"
+  sed "s|@CERTIFY_DATA_DIR@|${maintenance_data_dir:-/var/lib/certify}|g" \
+    "$files_root/packaging/certify-update.path" >/etc/systemd/system/certify-update.path
+  chmod 0644 /etc/systemd/system/certify-update.path
+  install -m 0755 "$files_root/packaging/web-update.sh" /usr/local/sbin/certify-web-update
   systemctl stop certify || true
   rm -rf "$previous"
   mv "$active" "$previous"
