@@ -38,6 +38,20 @@ if [[ ! -x "$source_root/packaging/update-online.sh" ]]; then
   exit 1
 fi
 
+# "No update available" is a normal outcome, not a failed installation.
+if /usr/local/sbin/certify-update-check; then
+  if ! python3 - "$data_dir/update-check-status.json" <<'PY'
+import json
+import sys
+with open(sys.argv[1], encoding="utf-8") as stream:
+    raise SystemExit(0 if json.load(stream).get("update_available") else 1)
+PY
+  then
+    write_status idle "Kein Update erforderlich; die installierte Version ist aktuell." finished_at
+    exit 0
+  fi
+fi
+
 write_status running "Update wird vorbereitet; der Dienst wird anschließend neu gestartet." started_at
 log="$data_dir/update.log"
 if "$source_root/packaging/update-online.sh" >"$log" 2>&1; then

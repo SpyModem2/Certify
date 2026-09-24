@@ -908,7 +908,29 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 result["update_status"] = "unknown"
         if (settings.data_dir / "update.request").exists():
             result["update_status"] = "queued"
+        check_file = settings.data_dir / "update-check-status.json"
+        if check_file.exists():
+            try:
+                value = json.loads(check_file.read_text(encoding="utf-8"))
+                if isinstance(value, dict):
+                    result.update(value)
+            except (OSError, json.JSONDecodeError):
+                result["check_status"] = "unknown"
+        if (settings.data_dir / "update-check.request").exists():
+            result["check_status"] = "queued"
         return result
+
+    @app.post("/api/v1/maintenance/update/check", status_code=202)
+    def request_update_check(actor: Annotated[Principal, Depends(session_admin)]) -> dict[str, str]:
+        request_file = settings.data_dir / "update-check.request"
+        if request_file.exists():
+            raise HTTPException(status.HTTP_409_CONFLICT, "an update check is already queued")
+        audit.append(actor.username, "maintenance.update.check", "system")
+        temporary = request_file.with_suffix(".tmp")
+        temporary.write_text(json.dumps({"requested_at": datetime.now(UTC).isoformat(), "actor": actor.username}), encoding="utf-8")
+        temporary.chmod(0o600)
+        temporary.replace(request_file)
+        return {"status": "queued"}
 
     @app.post("/api/v1/maintenance/backup")
     def download_backup(body: BackupRequest, actor: Annotated[Principal, Depends(session_admin)]) -> Response:

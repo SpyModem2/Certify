@@ -8,6 +8,15 @@ from pathlib import Path
 ROOT = Path(__file__).parents[1]
 INSTALL_COMMON = ROOT / "packaging" / "install-common.sh"
 UPDATE_COMMON = ROOT / "packaging" / "update-common.sh"
+
+
+def test_release_version_files_are_consistent() -> None:
+    import re
+    import tomllib
+
+    project_version = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]["version"]
+    module_version = re.search(r'__version__ = "([^"]+)"', (ROOT / "src/certify/__init__.py").read_text()).group(1)
+    assert (ROOT / "VERSION").read_text().strip() == project_version == module_version
 BOOTSTRAP_INSTALLER = ROOT / "install.sh"
 
 

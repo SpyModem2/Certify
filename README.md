@@ -340,6 +340,15 @@ und schaltet die Umgebung um. Kann Certify anschließend nicht starten, wird
 automatisch die vorherige Version wiederhergestellt. Parallele Updates werden
 durch eine Sperrdatei verhindert.
 
+Certify prüft über einen persistenten systemd-Timer einmal täglich, ob der
+verfolgte Branch in der konfigurierten Git-Quelle eine neuere `VERSION` enthält.
+Die Prüfung kann in **Updates & Backups** außerdem jederzeit manuell angestoßen
+werden. Ein aktueller Versionsstand ist ein normaler, erfolgreicher Prüflauf und
+wird nicht als fehlgeschlagenes Update gemeldet. Die Prüfung installiert keine
+Dateien; erst **Online-Update starten** löst die Installation aus. Für Releases
+müssen `VERSION`, die Projektversion in `pyproject.toml` und
+`certify.__version__` denselben Wert enthalten.
+
 ### Online aktualisieren
 
 Im vorhandenen, sauberen Git-Checkout genügt der Aufruf des Updaters:

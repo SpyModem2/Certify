@@ -1,0 +1,12 @@
+[Unit]
+Description=Check whether a Certify update is available
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/certify-update-check
+User=root
+Group=root
+PrivateTmp=yes
+ProtectHome=yes
