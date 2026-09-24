@@ -7,6 +7,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).parents[1]
 INSTALL_COMMON = ROOT / "packaging" / "install-common.sh"
+UPDATE_COMMON = ROOT / "packaging" / "update-common.sh"
 
 
 def _command(path: Path, name: str, body: str) -> None:
@@ -133,3 +134,27 @@ def test_online_installer_uses_local_project_source() -> None:
     assert 'pip install "$root"' in script
     assert "CERTIFY_VERSION" not in script
     assert "certify-server==" not in script
+
+
+def test_updaters_use_transactional_common_flow() -> None:
+    online = (ROOT / "packaging" / "update-online.sh").read_text()
+    offline = (ROOT / "packaging" / "update-offline.sh").read_text()
+    common = UPDATE_COMMON.read_text()
+
+    assert 'certify_update "$root"' in online
+    assert "sha256sum --check dist/SHA256SUMS" in offline
+    assert "venv.new" in common
+    assert "venv.previous" in common
+    assert "from certify.api import create_app" in common
+    assert "from certify.api import app" not in common
+    assert common.index('pip" install') < common.index("systemctl stop certify")
+    assert "systemctl is-active --quiet certify" in common
+    assert 'mv "$previous" "$active"' in common
+
+
+def test_wheelhouse_checksums_are_portable_and_bundle_is_created() -> None:
+    script = (ROOT / "packaging" / "build-wheelhouse.sh").read_text()
+
+    assert '(cd "$root" && sha256sum wheelhouse/*.whl dist/*.whl' in script
+    assert "certify-update-" in script
+    assert "README.md LICENSE packaging dist wheelhouse" in script
