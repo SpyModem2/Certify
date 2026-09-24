@@ -44,6 +44,46 @@ def test_login_and_certificate_request(tmp_path: Path) -> None:
         assert response.json()["status"] == "pending"
 
 
+def test_ca_account_terms_and_certificate_assignment(tmp_path: Path) -> None:
+    with app_client(tmp_path) as client:
+        login = client.post(
+            "/api/v1/auth/login",
+            json={"username": "admin", "password": "Correct horse battery staple!7"},
+        )
+        headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+        account = {
+            "name": "Let's Encrypt Production",
+            "provider": "letsencrypt",
+            "directory_url": "https://acme-v02.api.letsencrypt.org/directory",
+            "email": "pki@example.test",
+            "terms_url": "https://letsencrypt.org/repository/",
+            "terms_accepted": True,
+        }
+        rejected = client.post(
+            "/api/v1/ca-accounts", headers=headers, json={**account, "terms_accepted": False}
+        )
+        assert rejected.status_code == 422
+
+        created = client.post("/api/v1/ca-accounts", headers=headers, json=account)
+        assert created.status_code == 201
+        assert created.json()["terms_accepted_at"]
+        assert client.get("/api/v1/ca-accounts", headers=headers).json()[0]["email"] == "pki@example.test"
+
+        certificate = client.post(
+            "/api/v1/certificates",
+            headers=headers,
+            json={
+                "common_name": "guided.example.test",
+                "challenge": "http-01",
+                "ca_account_id": created.json()["id"],
+            },
+        )
+        assert certificate.status_code == 201
+        inventory = client.get("/api/v1/certificates", headers=headers).json()[0]
+        assert inventory["ca_name"] == "Let's Encrypt Production"
+        assert inventory["status_detail"].startswith("Auftrag angelegt")
+
+
 def test_health_and_localized_page(tmp_path: Path) -> None:
     with app_client(tmp_path) as client:
         assert client.get("/health").json() == {"status": "ok", "version": "0.1.0"}
