@@ -138,11 +138,34 @@ class ApiKeyCreate(BaseModel):
 class CertificateCreate(BaseModel):
     common_name: str = Field(min_length=1, max_length=253)
     sans: list[str] = Field(default_factory=list, max_length=100)
-    acme_directory: str
+    acme_directory: str | None = None
     challenge: Literal["http-01", "dns-01"]
     key_mode: Literal["managed", "csr"] = "managed"
     csr_pem: str | None = None
     target_ids: list[int] = Field(default_factory=list, max_length=100)
+    ca_account_id: int | None = None
+
+
+class CaAccountCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=128)
+    provider: Literal["letsencrypt", "custom"]
+    directory_url: str
+    email: str = Field(min_length=3, max_length=320)
+    terms_url: str | None = None
+    terms_accepted: bool
+    enabled: bool = True
+
+    @field_validator("email")
+    @classmethod
+    def valid_email(cls, value: str) -> str:
+        return EmailChange(email=value).email
+
+    @field_validator("directory_url", "terms_url")
+    @classmethod
+    def valid_urls(cls, value: str | None) -> str | None:
+        if value is not None:
+            validate_acme_directory(value)
+        return value
 
 
 class TargetAssignments(BaseModel):
@@ -511,9 +534,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def certificates(actor: Annotated[Principal, Depends(principal)]) -> list[dict[str, object]]:
         with database.connect() as connection:
             if actor.role in ("admin", "auditor"):
-                rows = connection.execute("SELECT id,common_name,sans,challenge,key_mode,status,not_after,created_at FROM certificates ORDER BY id DESC").fetchall()
+                rows = connection.execute("SELECT c.id,c.common_name,c.sans,c.acme_directory,c.challenge,c.key_mode,c.status,c.status_detail,c.not_after,c.created_at,c.updated_at,c.ca_account_id,a.name AS ca_name FROM certificates c LEFT JOIN ca_accounts a ON a.id=c.ca_account_id ORDER BY c.id DESC").fetchall()
             else:
-                rows = connection.execute("SELECT c.id,c.common_name,c.sans,c.challenge,c.key_mode,c.status,c.not_after,c.created_at FROM certificates c JOIN certificate_users cu ON cu.certificate_id=c.id WHERE cu.user_id=? ORDER BY c.id DESC", (actor.id,)).fetchall()
+                rows = connection.execute("SELECT c.id,c.common_name,c.sans,c.acme_directory,c.challenge,c.key_mode,c.status,c.status_detail,c.not_after,c.created_at,c.updated_at,c.ca_account_id,a.name AS ca_name FROM certificates c JOIN certificate_users cu ON cu.certificate_id=c.id LEFT JOIN ca_accounts a ON a.id=c.ca_account_id WHERE cu.user_id=? ORDER BY c.id DESC", (actor.id,)).fetchall()
             certificate_ids = [row["id"] for row in rows]
             targets_by_certificate: dict[int, list[dict[str, object]]] = {item: [] for item in certificate_ids}
             if certificate_ids:
@@ -535,13 +558,29 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.post("/api/v1/certificates", status_code=201)
     def create_certificate(body: CertificateCreate, actor: Annotated[Principal, Depends(roles("admin", "operator"))]) -> dict[str, object]:
-        try:
-            validate_acme_directory(body.acme_directory)
-        except ValueError as error:
-            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(error)) from error
+        if body.ca_account_id is None:
+            if not body.acme_directory:
+                raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "acme_directory or ca_account_id is required")
+            try:
+                validate_acme_directory(body.acme_directory)
+            except ValueError as error:
+                raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(error)) from error
         if body.key_mode == "csr" and not body.csr_pem:
             raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "csr_pem is required for CSR mode")
         with database.connect() as connection:
+            directory = body.acme_directory
+            if body.ca_account_id is not None:
+                account = connection.execute(
+                    "SELECT id,directory_url,enabled,terms_accepted_at FROM ca_accounts WHERE id=?",
+                    (body.ca_account_id,),
+                ).fetchone()
+                if not account:
+                    raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "certification authority account does not exist")
+                if not account["enabled"]:
+                    raise HTTPException(status.HTTP_409_CONFLICT, "certification authority account is disabled")
+                if not account["terms_accepted_at"]:
+                    raise HTTPException(status.HTTP_409_CONFLICT, "CA terms must be accepted first")
+                directory = account["directory_url"]
             requested_targets = list(dict.fromkeys(body.target_ids))
             if requested_targets:
                 placeholders = ",".join("?" for _ in requested_targets)
@@ -550,7 +589,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 ).fetchall()
                 if len(existing) != len(requested_targets):
                     raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "one or more target systems do not exist")
-            cursor = connection.execute("INSERT INTO certificates(common_name,sans,acme_directory,challenge,key_mode,csr_pem,created_by) VALUES(?,?,?,?,?,?,?)", (body.common_name, json.dumps(body.sans), body.acme_directory, body.challenge, body.key_mode, body.csr_pem, actor.id))
+            detail = "Auftrag angelegt; Schlüsselmaterial und Challenge werden vorbereitet."
+            cursor = connection.execute("INSERT INTO certificates(common_name,sans,acme_directory,challenge,key_mode,csr_pem,created_by,ca_account_id,status_detail) VALUES(?,?,?,?,?,?,?,?,?)", (body.common_name, json.dumps(body.sans), directory, body.challenge, body.key_mode, body.csr_pem, actor.id, body.ca_account_id, detail))
             connection.execute("INSERT INTO certificate_users(certificate_id,user_id) VALUES(?,?)", (cursor.lastrowid, actor.id))
             connection.executemany(
                 "INSERT INTO certificate_targets(certificate_id,target_id) VALUES(?,?)",
@@ -558,6 +598,41 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
         audit.append(actor.username, "certificate.request", f"certificate:{cursor.lastrowid}", {"common_name": body.common_name, "challenge": body.challenge, "key_mode": body.key_mode, "target_ids": requested_targets})
         return {"id": cursor.lastrowid, "status": "pending"}
+
+    @app.get("/api/v1/ca-accounts")
+    def list_ca_accounts(_: Annotated[Principal, Depends(roles("admin", "operator", "auditor"))]) -> list[dict[str, object]]:
+        with database.connect() as connection:
+            rows = connection.execute(
+                "SELECT id,name,provider,directory_url,email,terms_url,terms_accepted_at,enabled,created_at,updated_at FROM ca_accounts ORDER BY name"
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    @app.post("/api/v1/ca-accounts", status_code=201)
+    def create_ca_account(body: CaAccountCreate, actor: Annotated[Principal, Depends(roles("admin"))]) -> dict[str, object]:
+        if not body.terms_accepted:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "the CA terms must be accepted")
+        try:
+            with database.connect() as connection:
+                cursor = connection.execute(
+                    "INSERT INTO ca_accounts(name,provider,directory_url,email,terms_url,terms_accepted_at,enabled) VALUES(?,?,?,?,?,CURRENT_TIMESTAMP,?)",
+                    (body.name.strip(), body.provider, body.directory_url, body.email, body.terms_url, body.enabled),
+                )
+                row = connection.execute("SELECT id,name,provider,directory_url,email,terms_url,terms_accepted_at,enabled,created_at,updated_at FROM ca_accounts WHERE id=?", (cursor.lastrowid,)).fetchone()
+        except Exception as error:
+            if "UNIQUE constraint" in str(error):
+                raise HTTPException(status.HTTP_409_CONFLICT, "CA account name already exists") from error
+            raise
+        audit.append(actor.username, "ca_account.create", f"ca_account:{cursor.lastrowid}", {"name": body.name, "provider": body.provider})
+        return dict(row)
+
+    @app.delete("/api/v1/ca-accounts/{account_id}", status_code=204)
+    def disable_ca_account(account_id: int, actor: Annotated[Principal, Depends(roles("admin"))]) -> Response:
+        with database.connect() as connection:
+            result = connection.execute("UPDATE ca_accounts SET enabled=0,updated_at=CURRENT_TIMESTAMP WHERE id=? AND enabled=1", (account_id,))
+        if not result.rowcount:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "active CA account not found")
+        audit.append(actor.username, "ca_account.disable", f"ca_account:{account_id}")
+        return Response(status_code=204)
 
     @app.get("/api/v1/certificates/{certificate_id}/download")
     def download_certificate(certificate_id: int, actor: Annotated[Principal, Depends(roles("admin", "operator"))], include_key: bool = False) -> Response:

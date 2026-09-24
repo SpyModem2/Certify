@@ -36,7 +36,16 @@ CREATE TABLE IF NOT EXISTS certificates (
  key_mode TEXT NOT NULL CHECK(key_mode IN ('managed','csr')),
  status TEXT NOT NULL DEFAULT 'pending', certificate_pem TEXT, private_key_pem TEXT,
  csr_pem TEXT, not_after TEXT, created_by INTEGER REFERENCES users(id),
+ ca_account_id INTEGER REFERENCES ca_accounts(id), status_detail TEXT,
  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS ca_accounts (
+ id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE,
+ provider TEXT NOT NULL CHECK(provider IN ('letsencrypt','custom')),
+ directory_url TEXT NOT NULL, email TEXT NOT NULL, terms_url TEXT,
+ terms_accepted_at TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1,
+ created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+ updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE TABLE IF NOT EXISTS targets (
  id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE,
@@ -100,6 +109,11 @@ class Database:
                 connection.execute("ALTER TABLE targets ADD COLUMN ip_address TEXT")
             if "secret_config" not in target_columns:
                 connection.execute("ALTER TABLE targets ADD COLUMN secret_config TEXT")
+            certificate_columns = {row["name"] for row in connection.execute("PRAGMA table_info(certificates)")}
+            if "ca_account_id" not in certificate_columns:
+                connection.execute("ALTER TABLE certificates ADD COLUMN ca_account_id INTEGER REFERENCES ca_accounts(id)")
+            if "status_detail" not in certificate_columns:
+                connection.execute("ALTER TABLE certificates ADD COLUMN status_detail TEXT")
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:

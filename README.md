@@ -20,7 +20,10 @@ manipulationserkennbare Audit-Kette in einer zweisprachigen Webanwendung.
   und auf reinen Lesezugriff eingeschränkt werden können
 - Rollen `admin`, `operator` und `auditor`
 - HTTP-01- und DNS-01-Provider-Schnittstellen inklusive Custom-DNS-Webhook
+- zentrale ACME-/CA-Anbindungen mit Kontaktadresse, Verzeichnis-URL und
+  dokumentierter Zustimmung zu den Nutzungsbedingungen
 - Zertifikatsinventar für verwaltete Schlüssel und externe CSR
+- geführter Zertifikatsantrag mit Prüfschritt sowie verständlicher Status-Timeline
 - Zieladapter für Linux/SSH, IIS/PowerShell-over-SSH und FortiGate 7.4
 - benutzerbezogene Zertifikatszuweisung, CSR-Upload und verschlüsselte lokale Schlüssel
 - Systeminventar und explizite Zertifikat-System-Zuordnung; Zugangsdaten werden AEAD-verschlüsselt
