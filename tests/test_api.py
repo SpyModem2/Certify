@@ -1,3 +1,4 @@
+import base64
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -217,6 +218,19 @@ def test_user_identity_email_and_totp_lifecycle(tmp_path: Path) -> None:
         setup = client.post("/api/v1/users/me/totp/setup", headers=headers)
         assert setup.status_code == 200
         assert setup.json()["otpauth_uri"].startswith("otpauth://totp/Certify%3Aadmin?")
+        assert setup.json()["qr_code"].startswith("data:image/svg+xml;base64,")
+        assert b"<svg" in base64.b64decode(setup.json()["qr_code"].split(",", 1)[1])
+
+        cancelled = client.delete("/api/v1/users/me/totp/setup", headers=headers)
+        assert cancelled.status_code == 204
+        cancelled_confirmation = client.post(
+            "/api/v1/users/me/totp/confirm",
+            headers=headers,
+            json={"code": totp(setup.json()["secret"])},
+        )
+        assert cancelled_confirmation.status_code == 409
+
+        setup = client.post("/api/v1/users/me/totp/setup", headers=headers)
         confirmation = client.post(
             "/api/v1/users/me/totp/confirm",
             headers=headers,

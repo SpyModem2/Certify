@@ -1,10 +1,12 @@
+import base64
 import hashlib
 import hmac
 import json
 import secrets
 import time
-from urllib.parse import quote
 from contextlib import asynccontextmanager
+from io import BytesIO
+from urllib.parse import quote
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Annotated, Literal
@@ -17,6 +19,8 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response, 
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+import qrcode
+import qrcode.image.svg
 from pydantic import BaseModel, Field, field_validator
 
 from .audit import AuditLog
@@ -293,8 +297,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             connection.execute("UPDATE users SET totp_pending_secret=? WHERE id=?", (secret, actor.id))
         label = quote(f"Certify:{actor.username}", safe="")
         uri = f"otpauth://totp/{label}?secret={secret}&issuer=Certify&digits=6&period=30"
+        qr_buffer = BytesIO()
+        qrcode.make(uri, image_factory=qrcode.image.svg.SvgPathImage).save(qr_buffer)
+        qr_code = "data:image/svg+xml;base64," + base64.b64encode(qr_buffer.getvalue()).decode("ascii")
         audit.append(actor.username, "user.totp.setup.started", f"user:{actor.id}")
-        return {"secret": secret, "otpauth_uri": uri}
+        return {"secret": secret, "otpauth_uri": uri, "qr_code": qr_code}
+
+    @app.delete("/api/v1/users/me/totp/setup", status_code=204)
+    def cancel_totp_setup(actor: Annotated[Principal, Depends(principal)]) -> Response:
+        if actor.api_key_id is not None:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "TOTP setup requires a user session")
+        with database.connect() as connection:
+            result = connection.execute(
+                "UPDATE users SET totp_pending_secret=NULL WHERE id=? AND totp_pending_secret IS NOT NULL",
+                (actor.id,),
+            )
+        if result.rowcount:
+            audit.append(actor.username, "user.totp.setup.cancelled", f"user:{actor.id}")
+        return Response(status_code=204)
 
     @app.post("/api/v1/users/me/totp/confirm", status_code=204)
     def confirm_totp(body: TotpConfirm, actor: Annotated[Principal, Depends(principal)]) -> Response:
